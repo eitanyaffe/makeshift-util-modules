@@ -2,10 +2,12 @@
 # rule for single subject
 ####################################################################################
 
-DEMO_SUBJECT_DONE?=$(DEMO_SUBJECT_DIR)/.done
+DEMO_SUBJECT_DONE?=$(DEMO_SUBJECT_DIR)/.done_subject
 $(DEMO_SUBJECT_DONE):
 	$(call _start,$(DEMO_SUBJECT_DIR))
 	echo "$(DEMO_SUBJECT_NAME) is $(DEMO_SUBJECT_HEIGHT)cm" > $(DEMO_SUBJECT_TABLE)
+	echo `nproc` >> $(DEMO_SUBJECT_TABLE)
+	echo $$(($$(getconf _PHYS_PAGES) * $$(getconf PAGE_SIZE) / (1024 * 1024))) >> $(DEMO_SUBJECT_TABLE)
 	$(_end_touch)
 demo_subject: $(DEMO_SUBJECT_DONE)
 
