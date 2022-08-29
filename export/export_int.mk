@@ -14,10 +14,10 @@ EXPORT_ID?=default
 EXPORT_DIR?=$(OUTPUT_DIR)/export/$(EXPORT_VER)/$(EXPORT_ID)
 
 # by default export only contig table
-EXPORT_VARIALBES?=CONTIG_TABLE
+EXPORT_VARIABLES?=CONTIG_TABLE
 
 # user-defined evals these variables
-EXPORT_VARIALBES_NOEVAL?=
+EXPORT_VARIABLES_NOEVAL?=
 
 # user-defined directories
 EXPORT_USER_DIRS?=
