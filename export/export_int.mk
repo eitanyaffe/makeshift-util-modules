@@ -3,15 +3,19 @@
 #####################################################################################################
 
 units=export.mk
-$(call _register_module,export,$(units),)
+EXPORT_VER?=v1
+$(call _register_module,export,EXPORT_VER,$(units))
 
 #####################################################################################################
 # anchor export
 #####################################################################################################
 
-EXPORT_VER?=v1
+# what to do on missing file (warning / error)
+EXPORT_ON_MISSING_FILE?=warning
+
 EXPORT_ID?=default
-EXPORT_DIR?=$(OUTPUT_DIR)/export/$(EXPORT_VER)/$(EXPORT_ID)
+EXPORT_PREFIX?=export/$(PIPELINE_NAME)/$(PROJECT_NAME)/$(EXPORT_ID)
+EXPORT_DIR?=/makeshift/$(EXPORT_PREFIX)
 
 # by default export only contig table
 EXPORT_VARIABLES?=CONTIG_TABLE
@@ -23,9 +27,9 @@ EXPORT_VARIABLES_NOEVAL?=
 EXPORT_USER_DIRS?=
 
 # this table keeps original file names, for local viewing
-EXPORT_TABLE?=$(EXPORT_DIR)/table
+EXPORT_TABLE?=$(EXPORT_DIR)/export_table.txt
 
 # copy files, for export to other machine
-EXPORT_ODIR?=$(EXPORT_DIR)/$(EXPORT_ID)
-EXPORT_ODIR_TAR?=$(EXPORT_DIR)/$(EXPORT_ID).tar
+# EXPORT_ODIR?=$(EXPORT_DIR)/$(EXPORT_ID)
+# EXPORT_ODIR_TAR?=$(EXPORT_DIR)/$(EXPORT_ID).tar
 
