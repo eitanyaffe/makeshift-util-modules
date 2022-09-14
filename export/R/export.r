@@ -58,4 +58,6 @@ export.copy=function(ofn, odir, on.missing.file, external.dir, mount.dir, ...)
     }
 
     save.table(rr[,c("id", "found", "path")], ofn)
+
+    cat(sprintf("NOTE: Downloaded files can be accessed outside the environment on %s\n", external.dir))
 }
