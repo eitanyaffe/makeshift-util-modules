@@ -1,5 +1,6 @@
 
 export_table:
+	$(call _assert,$(EXPORT_VARIABLES))
 	$(call _start,$(EXPORT_DIR))
 	$(_R) R/export.r export.table \
 		ofn=$(EXPORT_TABLE) \
@@ -8,9 +9,11 @@ export_table:
 	$(_end)
 
 export_files:
+	$(call _assert,$(EXPORT_VARIABLES))
 	$(call _start,$(EXPORT_DIR))
 	$(_R) R/export.r export.copy \
 		mount.dir=$(GCP_DSUB_ODIR_BUCKET_BASE) \
+		config.dir=$(_cd) \
 		external.dir=$(MAKESHIFT_LOCAL_PATH)/$(EXPORT_PREFIX) \
 		on.missing.file=$(EXPORT_ON_MISSING_FILE) \
 		ofn=$(EXPORT_TABLE) \
