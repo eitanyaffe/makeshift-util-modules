@@ -1,51 +1,47 @@
-
-export.table=function(ofn, ...)
-{
-    vars = list(...)
-    rr = NULL
-    for (i in 1:length(vars)) {
-        name = names(vars)[i]
-        var = vars[[i]]
-        rr = rbind(rr, data.frame(id=name, value=var))
-    }
-    save.table(rr, ofn)
-}
-
-####################################################################################
-####################################################################################
-
-create.table=function(vars, external.dir, mount.dirs, config.dir, odir)
+create.table=function(df, vars, external.dir, mount.dirs, config.dir, odir)
 {
     rr = NULL
-    for (i in 1:length(vars)) {
-        name = names(vars)[i]
-        src = vars[[i]]
-        found = F
-        for (mount.dir in mount.dirs) {
-            if (grepl(mount.dir, src)) {
-                tgt = gsub(mount.dir, odir, src)
-                path = gsub(mount.dir, external.dir, src)
-                found = T
-                break
+    for (k in 1:dim(df)[1]) {
+        instance=function(fn, dfx) {
+            for (j in 1:dim(dfx)[2]) {
+                fn = gsub(colnames(dfx)[j], dfx[j], fn)
             }
+            fn
         }
-        if (!found) {
-            if (grepl(config.dir, src)) {
-                tgt = gsub(config.dir, paste0(odir, "/config"), src)
-                path = gsub(config.dir,paste0(external.dir, "/config"), src)
-            } else {
-                stop(sprintf("path does not contain output or config mount directories: %s\n", src))
+        for (i in 1:length(vars)) {
+            name = names(vars)[i]
+            src = instance(vars[[i]], df[k,])
+            found = F
+            for (mount.dir in mount.dirs) {
+                if (grepl(mount.dir, src)) {
+                    tgt = gsub(mount.dir, odir, src)
+                    path = gsub(mount.dir, external.dir, src)
+                    found = T
+                    break
+                }
             }
+            if (!found) {
+                if (grepl(config.dir, src)) {
+                    tgt = gsub(config.dir, paste0(odir, "/config"), src)
+                    path = gsub(config.dir,paste0(external.dir, "/config"), src)
+                } else {
+                    stop(sprintf("path does not contain output or config mount directories: %s\n", src))
+                }
+            }
+            id = paste0(name, ":", paste(df[k,], collapse="_"))
+            rr = rbind(rr, data.frame(id=id, src=src, tgt=tgt, path=path))
         }
-        rr = rbind(rr, data.frame(id=name, src=src, tgt=tgt, path=path))
     }
     rr
 }
 
-export.copy=function(ofn, odir, on.missing.file, external.dir, mount.dirs, config.dir, ...)
+export.set=function(table.ifn, dyn.vars, ofn, odir,
+                    on.missing.file, external.dir, mount.dirs, config.dir, ...)
 {
+    df = load.table(table.ifn)
+    df = df[,dyn.vars]
     vars = list(...)
-    rr = create.table(vars=vars, external.dir=external.dir,
+    rr = create.table(df=df, vars=vars, external.dir=external.dir,
                       mount.dirs=mount.dirs, config.dir=config.dir, odir=odir)
     rr$size = 0
     rr$found = F
