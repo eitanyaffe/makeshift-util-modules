@@ -74,7 +74,7 @@ export.copy=function(ofn, odir, on.missing.file, external.dir, mount.dirs, confi
             if (on.missing.file == "error")
                 stop(sprintf("Missing file: %s", ifn))
             else
-                cat(sprintf("Warning: skipping missing file: %s\n", ifn))
+                cat(sprintf("Warning: skipping %s, missing file: %s\n", name, ifn))
             next
         }
         rr$found[i] = T
@@ -84,7 +84,7 @@ export.copy=function(ofn, odir, on.missing.file, external.dir, mount.dirs, confi
             
         command = sprintf("rsync -r -t %s %s", ifn, ofn.i)
         #cat(sprintf("syncing %s (%.1fMb): %s\n", name, size/10^6, command))
-        cat(sprintf("syncing %s (%.1fMb) ...\n", name, size/10^6))
+        cat(sprintf("syncing %s (%.1fMb) : %s\n", name, size/10^6, ifn))
         if (system(command) != 0)
             stop(paste("failed command:", command))
     }

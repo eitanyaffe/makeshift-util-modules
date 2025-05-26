@@ -18,8 +18,7 @@ export_files:
 		on.missing.file=$(EXPORT_ON_MISSING_FILE) \
 		ofn=$(EXPORT_TABLE) \
 		odir=$(EXPORT_DIR) \
-		$(call _export_variable,$(EXPORT_VARIABLES)) \
-		$(EXPORT_VARIABLES_NOEVAL)
+		$(call _export_variable,$(EXPORT_VARIABLES)) $(EXPORT_VARIABLES_NOEVAL)
 	$(_end)
 
 # export set of of variables based on an input table

@@ -10,7 +10,9 @@ create.table=function(df, vars, external.dir, mount.dirs, config.dir, odir)
         }
         for (i in 1:length(vars)) {
             name = names(vars)[i]
-            src = instance(vars[[i]], df[k,])
+            dfx = as.data.frame(df[k,])
+            colnames(dfx) = colnames(df)
+            src = instance(vars[[i]], dfx)
             found = F
             for (mount.dir in mount.dirs) {
                 if (grepl(mount.dir, src)) {
@@ -39,7 +41,9 @@ export.set=function(table.ifn, dyn.vars, ofn, odir,
                     on.missing.file, external.dir, mount.dirs, config.dir, ...)
 {
     df = load.table(table.ifn)
-    df = df[,dyn.vars]
+    df = as.data.frame(df[,dyn.vars])
+    colnames(df) = dyn.vars
+    
     vars = list(...)
     rr = create.table(df=df, vars=vars, external.dir=external.dir,
                       mount.dirs=mount.dirs, config.dir=config.dir, odir=odir)
@@ -70,7 +74,7 @@ export.set=function(table.ifn, dyn.vars, ofn, odir,
             if (on.missing.file == "error")
                 stop(sprintf("Missing file: %s", ifn))
             else
-                cat(sprintf("Warning: skipping missing file: %s\n", ifn))
+                cat(sprintf("Warning: skipping %s, missing file: %s\n", name, ifn))
             next
         }
         rr$found[i] = T
@@ -80,7 +84,7 @@ export.set=function(table.ifn, dyn.vars, ofn, odir,
             
         command = sprintf("rsync -r -t %s %s", ifn, ofn.i)
         #cat(sprintf("syncing %s (%.1fMb): %s\n", name, size/10^6, command))
-        cat(sprintf("syncing %s (%.1fMb) ...\n", name, size/10^6))
+        cat(sprintf("syncing %s (%.1fMb) : %s\n", name, size/10^6, ifn))
         if (system(command) != 0)
             stop(paste("failed command:", command))
     }
