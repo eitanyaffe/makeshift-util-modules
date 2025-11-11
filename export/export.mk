@@ -31,6 +31,7 @@ export_set:
 		config.dir=$(_cd) \
 		external.dir=$(MAKESHIFT_LOCAL_PATH)/$(EXPORT_PREFIX) \
 		on.missing.file=$(EXPORT_ON_MISSING_FILE) \
+		select.aids=$(EXPORT_SELECT_AIDS) \
 		ofn=$(EXPORT_TABLE_SET) \
 		odir=$(EXPORT_DIR) \
 		$(call _export_variable,$(EXPORT_VARIABLES))

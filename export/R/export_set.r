@@ -38,9 +38,22 @@ create.table=function(df, vars, external.dir, mount.dirs, config.dir, odir)
 }
 
 export.set=function(table.ifn, dyn.vars, ofn, odir,
-                    on.missing.file, external.dir, mount.dirs, config.dir, ...)
+                    on.missing.file, external.dir, mount.dirs, config.dir,
+                    select.aids="all", ...)
 {
     df = load.table(table.ifn)
+    if (!(length(select.aids) == 1 && select.aids[1] == "all")) {
+        aids = as.character(select.aids)
+        cat(sprintf("selecting assembly ids: %s\n", paste(aids, collapse=" ")))
+        if (!"ASSEMBLY_ID" %in% colnames(df))
+            stop("assembly selection requires ASSEMBLY_ID column")
+        missing = setdiff(aids, unique(df$ASSEMBLY_ID))
+        if (length(missing) > 0)
+            stop(sprintf("missing assembly ids: %s", paste(missing, collapse=" ")))
+        df = df[df$ASSEMBLY_ID %in% aids,,drop=F]
+        if (dim(df)[1] == 0)
+            stop("no assemblies left after selection")
+    }
     df = as.data.frame(df[,dyn.vars])
     colnames(df) = dyn.vars
     
