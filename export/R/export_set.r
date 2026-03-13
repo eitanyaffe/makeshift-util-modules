@@ -39,9 +39,11 @@ create.table=function(df, vars, external.dir, mount.dirs, config.dir, odir)
 
 export.set=function(table.ifn, dyn.vars, ofn, odir,
                     on.missing.file, external.dir, mount.dirs, config.dir,
-                    select.aids="all", ...)
+                    select.aids="all", exclude.aids="none", export.tag="default", ...)
 {
     df = load.table(table.ifn)
+    
+    # apply assembly selection filter
     if (!(length(select.aids) == 1 && select.aids[1] == "all")) {
         aids = as.character(select.aids)
         cat(sprintf("selecting assembly ids: %s\n", paste(aids, collapse=" ")))
@@ -54,6 +56,23 @@ export.set=function(table.ifn, dyn.vars, ofn, odir,
         if (dim(df)[1] == 0)
             stop("no assemblies left after selection")
     }
+    
+    # apply assembly exclusion filter
+    if (!(length(exclude.aids) == 1 && exclude.aids[1] == "none")) {
+        exclude.ids = as.character(exclude.aids)
+        cat(sprintf("excluding assembly ids: %s\n", paste(exclude.ids, collapse=" ")))
+        if (!"ASSEMBLY_ID" %in% colnames(df))
+            stop("assembly exclusion requires ASSEMBLY_ID column")
+        df = df[!df$ASSEMBLY_ID %in% exclude.ids,,drop=F]
+        if (dim(df)[1] == 0) {
+            cat("no assemblies left after exclusion\n")
+            save.table(data.frame(id=character(0), found=logical(0), path=character(0)), ofn)
+            return()
+        }
+    }
+    
+    cat(sprintf("number of %s items to export: %d\n", export.tag, dim(df)[1]))
+    
     df = as.data.frame(df[,dyn.vars])
     colnames(df) = dyn.vars
     

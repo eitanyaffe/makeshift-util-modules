@@ -41,3 +41,6 @@ EXPORT_TABLE_SET?=$(EXPORT_DIR)/set_$(EXPORT_TAG).txt
 # EXPORT_ODIR_TAR?=$(EXPORT_DIR)/$(EXPORT_ID).tar
 EXPORT_SELECT_AIDS?=all
 
+# exclude specific assembly ids from export, default is none
+EXPORT_EXCLUDE_AIDS?=none
+
