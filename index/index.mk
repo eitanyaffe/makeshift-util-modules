@@ -33,7 +33,7 @@ index_build:
 	done
 
 # derive per-module index dirs from module names: long -> $(LONG_INDEX_DIR)
-_index_module_dirs=$(foreach mod,$(INDEX_MODULES),$(call reval3,$(shell echo $(mod) | tr a-z A-Z)_INDEX_DIR))
+_index_module_dirs=$(foreach mod,$(INDEX_MODULES),$(call reval,$(shell echo $(mod) | tr a-z A-Z)_INDEX_DIR))
 
 # copy all per-module index tables to INDEX_EXPORT_DIR and produce a summary table
 index_combine:

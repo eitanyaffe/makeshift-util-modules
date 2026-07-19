@@ -11,7 +11,6 @@ $(call _register_module,manuscript,MANUSCRIPT_VER,$(units))
 ####################################################################################################
 
 MANUSCRIPT_JSON?=$(_cd)/manuscript/figures.json
-MANUSCRIPT_LEGEND_MD?=$(_cd)/manuscript/legend.md
 
 ####################################################################################################
 # export
