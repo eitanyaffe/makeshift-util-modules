@@ -4,12 +4,25 @@
 reads the manuscript json, filters by module name(s) in x, and runs
 `make m={module} {target}` for each entry. no generate_methods.mk —
 the list is short enough to dispatch straight from the json.
+
+a stage may be selected so the gated and the always-fresh work can be invoked
+separately over the same module set: stats is what the user runs to measure
+values onto the bucket, compile is what renders the docs from them.
 """
 
 import json
 import os
 import subprocess
 import sys
+
+# stage -> the make target, derived from the entry's 'target'. the names match
+# the wiring every module's {module}_methods.mk declares.
+STAGES = {
+    "all": "{base}",
+    "scan": "{base}_scan",
+    "stats": "top_{base}_stats",
+    "compile": "{base}_compile",
+}
 
 
 def parse_key_value_args(tokens):
@@ -56,20 +69,22 @@ def select_entries(methods, x):
     return [e for e in methods if e["module"] in wanted]
 
 
-def run_entry(entry, make_bin, c, extra_make_args):
+def run_entry(entry, make_bin, c, stage, extra_make_args):
     module = entry.get("module")
-    target = entry.get("target")
-    if not module or not target:
+    base = entry.get("target")
+    if not module or not base:
         print("error: methods entry requires 'module' and 'target'",
               file=sys.stderr)
         print(f"  got: {entry}", file=sys.stderr)
         sys.exit(1)
+    target = STAGES[stage].format(base=base)
     title = entry.get("title") or module
-    # always remake — methods are documentation, like plot targets (no
-    # done-file gating). -B covers any leftover .done_* from older wiring.
-    cmd = [make_bin, "-B", f"m={module}", target, f"c={c}"] + extra_make_args
+    # no -B: scan and compile are phony and always run, while the stats stage
+    # is deliberately gated by a done file. -B would defeat that gate and
+    # recompute every module's stats on every invocation.
+    cmd = [make_bin, f"m={module}", target, f"c={c}"] + extra_make_args
     print("=" * 80, file=sys.stderr)
-    print(f"methods {module}: {title}", file=sys.stderr)
+    print(f"methods {stage} {module}: {title}", file=sys.stderr)
     print(f"  {' '.join(cmd)}", file=sys.stderr)
     print("=" * 80, file=sys.stderr)
     subprocess.run(cmd, check=True)
@@ -79,11 +94,16 @@ def main():
     kv = parse_key_value_args(sys.argv[1:])
     ifn = kv.pop("ifn", None)
     x = kv.pop("x", "all")
+    stage = kv.pop("stage", "all") or "all"
     make_bin = kv.pop("make", "make")
     c = kv.pop("c", None)
 
     if not ifn or not c:
         print("error: ifn and c are required", file=sys.stderr)
+        sys.exit(1)
+    if stage not in STAGES:
+        print(f"error: unknown stage '{stage}' — expected one of "
+              f"{', '.join(STAGES)}", file=sys.stderr)
         sys.exit(1)
     if not os.path.exists(ifn):
         print(f"error: figures.json not found: {ifn}", file=sys.stderr)
@@ -95,10 +115,11 @@ def main():
         return
 
     selected = select_entries(methods, x)
-    print(f"rendering {len(selected)} methods module(s)", file=sys.stderr)
+    print(f"methods {stage}: {len(selected)} module(s)", file=sys.stderr)
     for entry in selected:
-        run_entry(entry, make_bin, c, [])
-    print(f"done: {len(selected)} methods module(s) rendered", file=sys.stderr)
+        run_entry(entry, make_bin, c, stage, [])
+    print(f"done: methods {stage} over {len(selected)} module(s)",
+          file=sys.stderr)
 
 
 if __name__ == "__main__":

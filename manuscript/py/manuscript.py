@@ -196,57 +196,71 @@ def emit_captions_txt(figures, supp_figures, odir):
     print(f"generated: {ofn}", file=sys.stderr)
 
 
+def write_methods_md(ofn, entries, label):
+    """concatenate rendered bodies under a '## title' per methods[] entry"""
+    with open(ofn, "w") as f:
+        f.write("# Methods\n\n")
+        for i, (title, body) in enumerate(entries):
+            if i > 0:
+                f.write("\n---\n\n")
+            f.write(f"## {title}\n\n{body}\n")
+    print(f"generated: {ofn} ({len(entries)} module(s), {label})",
+          file=sys.stderr)
+
+
+# one export subdir and one combined file per (version, format) pair.
+# key = methods[] field name; value = (subdir, extension, combined basename)
+METHODS_VARIANTS = {
+    "paper_md":  ("methods", "md", "methods.md"),
+    "paper_tex": ("methods", "tex", "methods.tex"),
+    "full_md":   ("methods_full", "md", "methods_full.md"),
+    "full_tex":  ("methods_full", "tex", "methods_full.tex"),
+}
+
+
 def export_methods(methods, var_map, odir, on_missing):
-    """copy per-module methods docs; write methods.md and methods.tex"""
+    """copy each module's paper/full docs in both formats, then combine"""
     if not methods:
         print("no methods[] entries — skipping methods export", file=sys.stderr)
         return
 
-    methods_dir = os.path.join(odir, "methods")
-    os.makedirs(methods_dir, exist_ok=True)
+    for subdir, _ext, _combined in METHODS_VARIANTS.values():
+        os.makedirs(os.path.join(odir, subdir), exist_ok=True)
 
-    blocks = []
-    n_ok = 0
+    collected = {k: [] for k in METHODS_VARIANTS}
     print("=" * 80, file=sys.stderr)
     print("methods", file=sys.stderr)
     print("=" * 80, file=sys.stderr)
 
     for entry in methods:
         module = entry.get("module")
-        file_tok = entry.get("file")
-        if not module or not file_tok:
-            print("error: methods entry requires 'module' and 'file'",
+        missing = [k for k in METHODS_VARIANTS if not entry.get(k)]
+        if not module or missing:
+            print(f"error: methods entry requires 'module' and "
+                  f"{', '.join(sorted(METHODS_VARIANTS))}", file=sys.stderr)
+            print(f"  missing: {', '.join(missing) or 'module'}",
                   file=sys.stderr)
             print(f"  got: {entry}", file=sys.stderr)
             sys.exit(1)
         title = entry.get("title") or module
-        src = expand_vars(file_tok, var_map)
-        dst = os.path.join(methods_dir, f"{module}.txt")
         print(f"  {module} ({title}):", file=sys.stderr)
-        print(f"    src: {src}", file=sys.stderr)
-        print(f"    dst: {dst}", file=sys.stderr)
-        if not copy_file(src, dst, on_missing):
-            continue
-        with open(dst) as f:
-            body = f.read().rstrip()
-        blocks.append(body)
-        n_ok += 1
+        for key, (subdir, ext, _combined) in METHODS_VARIANTS.items():
+            src = expand_vars(entry[key], var_map)
+            dst = os.path.join(odir, subdir, f"{module}.{ext}")
+            print(f"    {src} -> {dst}", file=sys.stderr)
+            if not copy_file(src, dst, on_missing):
+                continue
+            with open(dst) as f:
+                collected[key].append((title, f.read().rstrip()))
 
-    ofn = os.path.join(odir, "methods.md")
-    with open(ofn, "w") as f:
-        f.write("# Methods\n\n")
-        for i, body in enumerate(blocks):
-            if i > 0:
-                f.write("\n\n---\n\n")
-            f.write(body)
-            f.write("\n")
-    print(f"generated: {ofn} ({n_ok} module(s))", file=sys.stderr)
-
-    # body-only LaTeX for \\input{} into a paper; titles from methods[].title
     from methods_to_tex import write_methods_tex
-    ofn_tex = os.path.join(odir, "methods.tex")
-    n_tex = write_methods_tex(methods, methods_dir, ofn_tex)
-    print(f"generated: {ofn_tex} ({n_tex} module(s))", file=sys.stderr)
+    for key, (_subdir, ext, combined) in METHODS_VARIANTS.items():
+        ofn = os.path.join(odir, combined)
+        if ext == "md":
+            write_methods_md(ofn, collected[key], key)
+        else:
+            n = write_methods_tex(collected[key], ofn)
+            print(f"generated: {ofn} ({n} module(s), {key})", file=sys.stderr)
 
 
 def parse_key_value_args(tokens):

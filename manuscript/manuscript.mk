@@ -36,12 +36,40 @@ figs:
 #   make methods x=cme c={config}     → one module
 #   make methods x="cme cdyn" c={config}
 #   make methods x=cme,cdyn c={config}
-# always remakes (like figs): methods_run.py passes make -B, and
-# {module}_methods targets are phony / no done-files.
+# scan and compile always re-run (phony); the stats stage is gated by a
+# done file per module and only recomputes when its version is bumped.
+# see the ms-methods skill.
 methods:
 	python $(_md)/py/methods_run.py \
 		ifn=$(MANUSCRIPT_JSON) \
 		x="$(x)" \
 		make=$(MAKE) \
 		c=$(PROJECT_NAME)
-.PHONY: methods
+
+# the stages of the above, over the same x= module selection, so template
+# validation, the gated measuring and the always-fresh rendering can each be
+# invoked separately. scan reads no data and is the cheapest authoring check.
+methods_scan:
+	python $(_md)/py/methods_run.py \
+		ifn=$(MANUSCRIPT_JSON) \
+		x="$(x)" \
+		stage=scan \
+		make=$(MAKE) \
+		c=$(PROJECT_NAME)
+
+methods_stats:
+	python $(_md)/py/methods_run.py \
+		ifn=$(MANUSCRIPT_JSON) \
+		x="$(x)" \
+		stage=stats \
+		make=$(MAKE) \
+		c=$(PROJECT_NAME)
+
+methods_compile:
+	python $(_md)/py/methods_run.py \
+		ifn=$(MANUSCRIPT_JSON) \
+		x="$(x)" \
+		stage=compile \
+		make=$(MAKE) \
+		c=$(PROJECT_NAME)
+.PHONY: methods methods_scan methods_stats methods_compile
