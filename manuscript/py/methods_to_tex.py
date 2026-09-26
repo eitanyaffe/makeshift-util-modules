@@ -5,13 +5,13 @@ Two roles:
 1. `convert_body` turns one markdown body into LaTeX. Used by
    methods_render.py when it compiles a module's paper.tex / full.tex.
 2. `write_methods_tex` concatenates the already-converted per-module .tex
-   bodies into a body-only methods.tex, in figures.json methods[] order.
+   bodies into a body-only methods.tex, in methods registry order.
 
 A rendered methods doc carries no title and no headings — it is a run of
 bold-led paragraphs — so the only heading structure comes from here:
 
   \\section{Methods}
-  \\subsection{title}   one per methods[] entry, from methods[].title
+  \\subsection{title}   one per registered module, from its title
 
 `\\subsubsection` is still emitted for a stray markdown heading, so a doc
 that does use headings degrades sensibly rather than losing them.
@@ -33,6 +33,12 @@ UNICODE_MAP = {
     "…": "\\ldots{}",
     "“": "``",
     "”": "''",
+    "‘": "`",
+    "’": "'",
+    "°": "\\textdegree{}",
+    # both the micro sign and the Greek mu turn up in pasted protocol text
+    "µ": "\\textmu{}",
+    "μ": "\\textmu{}",
     "′": "$\\prime$",
     "₁": "$_1$",
     "₀": "$_0$",
@@ -62,6 +68,10 @@ def escape_tex(s):
         ("}", "\\}"),
         ("~", "\\textasciitilde{}"),
         ("^", "\\textasciicircum{}"),
+        # bare < and > render as an inverted question and exclamation mark under
+        # the default font encoding, so "MAPQ >= 30" comes out as "MAPQ ¿= 30"
+        ("<", "\\textless{}"),
+        (">", "\\textgreater{}"),
     ]:
         s = s.replace(a, b)
     s = s.replace("\x00", "\\textbackslash{}")
@@ -218,13 +228,15 @@ def convert_body(body):
     return "\n".join(out)
 
 
-def write_methods_tex(entries, ofn):
+def write_methods_tex(entries, ofn, banner=""):
     """concatenate per-module LaTeX bodies into a body-only methods.tex.
 
-    entries: list of (title, tex_body) in methods[] order. The bodies are
+    entries: list of (title, tex_body) in registry order. The bodies are
     already LaTeX — methods_render.py converted them when it compiled each
     module — so this only adds the sectioning.
     ofn: path for the combined .tex.
+    banner: a plain sentence rendered bold under the section head, used to
+    say that some sections are incomplete.
     Returns the number of modules written.
     """
     parts = [
@@ -233,6 +245,9 @@ def write_methods_tex(entries, ofn):
         "\\section{Methods}",
         "",
     ]
+    if banner:
+        parts.append(f"\\textbf{{{escape_tex(banner)}}}")
+        parts.append("")
     for title, body in entries:
         parts.append(f"\\subsection{{{escape_tex(title)}}}")
         parts.append("")

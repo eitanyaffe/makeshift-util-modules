@@ -55,7 +55,7 @@ RE_ITEM = re.compile(r"^[A-Z]{2,5}(_[a-z]+)?$")
 
 
 def die(msg: str) -> None:
-    print(f"error: {msg}", file=sys.stderr)
+    print(f"error: {msg}")
     sys.exit(1)
 
 
@@ -211,8 +211,7 @@ def build(module_dirs: list[str], runs: list[str], resolved_fn: str):
 def hint_modules(runs: list[str]) -> None:
     refs = modules_referenced(runs)
     if refs:
-        print(f"modules invoked by these runs: {', '.join(refs)}",
-              file=sys.stderr)
+        print(f"modules invoked by these runs: {', '.join(refs)}")
 
 
 def cmd_modules(args) -> None:
@@ -229,9 +228,9 @@ def cmd_modules(args) -> None:
             if RE_ITEM.match(part) and part not in items:
                 items.append(part)
     if items:
-        print(f"items walked: {', '.join(items)}", file=sys.stderr)
+        print(f"items walked: {', '.join(items)}")
     for note in truncation_notes(args.ifn_runs):
-        print(note, file=sys.stderr)
+        print(note)
 
 
 def walked_items(runs: list[str]) -> dict[str, list[str]]:
@@ -282,13 +281,12 @@ def cmd_resolve(args) -> None:
               f'{redirect} {args.ofn_resolved}')
 
     print(f"resolving {len(variables)} done variable(s) over "
-          f"{len(modules)} module(s): {', '.join(modules)}", file=sys.stderr)
-    print(f"pinned items: {pins or '(none found)'}", file=sys.stderr)
+          f"{len(modules)} module(s): {', '.join(modules)}")
+    print(f"pinned items: {pins or '(none found)'}")
     for var, vals in sorted(items.items()):
         if len(vals) > 1:
             print(f"note: {var} appears as {', '.join(vals)}; pinned the "
-                  f"first — item components are normalized out of the match",
-                  file=sys.stderr)
+                  f"first — item components are normalized out of the match")
 
 
 def cmd_draft(args) -> None:
@@ -301,7 +299,9 @@ def cmd_draft(args) -> None:
     lines.append(f"module: {args.module}")
     lines.append(f"pipeline: {args.pipeline}")
     lines.append(f"config: {args.config}")
-    lines.append(f"tag: methods/{args.module}/v1.00")
+    # a fresh draft claims no verification; the tag is cut once the prose is
+    # read and accepted
+    lines.append("tag: none")
     for run in args.ifn_runs:
         lines.append(f"dry run: {os.path.basename(run)} <- {args.command}"
                      .replace("{target}", "?"))
@@ -330,17 +330,16 @@ def cmd_draft(args) -> None:
                     exist_ok=True)
         with open(args.ofn_draft, "w") as f:
             f.write(body)
-        print(f"wrote {args.ofn_draft}", file=sys.stderr)
+        print(f"wrote {args.ofn_draft}")
 
     print(f"steps that ran: {len(ordered)}   declared but never reached: "
-          f"{len(not_used)}", file=sys.stderr)
+          f"{len(not_used)}")
     for run_file, path in unmatched:
-        print(f"warning: {run_file}: no done variable matches {path}",
-              file=sys.stderr)
+        print(f"warning: {run_file}: no done variable matches {path}")
     if missing:
         print(f"warning: {len(missing)} declared done var(s) absent from the "
               f"resolution file: {', '.join(missing[:8])}"
-              f"{' …' if len(missing) > 8 else ''}", file=sys.stderr)
+              f"{' …' if len(missing) > 8 else ''}")
 
 
 def cmd_check(args) -> None:
@@ -379,17 +378,16 @@ def cmd_check(args) -> None:
                         f"'# not used'")
 
     for run_file, path in unmatched:
-        print(f"warning: {run_file}: no done variable matches {path}",
-              file=sys.stderr)
+        print(f"warning: {run_file}: no done variable matches {path}")
 
     if problems:
         print(f"error: {args.ifn_template} disagrees with the dry runs "
-              f"({len(problems)} problem(s)):", file=sys.stderr)
+              f"({len(problems)} problem(s)):")
         for p in problems:
-            print(f"  - {p}", file=sys.stderr)
+            print(f"  - {p}")
         sys.exit(1)
     print(f"ok: {len(expected)} step(s) accounted for, "
-          f"{len(not_used)} under 'not used'", file=sys.stderr)
+          f"{len(not_used)} under 'not used'")
 
 
 def main() -> None:

@@ -5,9 +5,10 @@ A template is a structured document, not free prose:
 
     # general
     module: binning
+    module version: v1.26
     pipeline: long
     config: h40
-    tag: methods/binning/v1.00
+    tag: methods/long/v1
     dry run: 01_p_binning.txt <- make plan t=p_binning c=h40 -B PAR_LOCAL_RUN_ONLY_FIRST_TASK=T
 
     # statistics
@@ -29,14 +30,26 @@ A template is a structured document, not free prose:
 A module is one or more blocks, a block is one or more paragraphs, and a
 paragraph has three parts. `steps` is the accounting: one line per make done
 variable, in the order the pipeline ran them, each with a one-line description
-short enough to read beside the prose. `text` is the prose that reaches the
-paper. `notes` never reaches the paper and is where output tables, parameters,
+short enough to read beside the prose. A step whose output is consumed later
+may end its bracket with `at: paragraph title`: the step keeps its place in
+pipeline order, and its prose sits in that later paragraph. `text` is the prose
+that reaches the paper. `notes` never reaches the paper and is where output tables, parameters,
 tool probes and reasoning live.
 
 The file opens with a reserved `# general` block recording which module and
-pipeline it describes, the tag the methods were last verified at, and the exact
-dry-run commands the step list came from, so a step sequence can always be
-traced back to the run that produced it.
+pipeline it describes, the module version the methods were written against, the
+tag freezing the code they describe, and the exact dry-run commands the step
+list came from, so a step sequence can always be traced back to the run that
+produced it.
+
+`module version` mirrors the version the module registers with, so a bump is
+staleness detectable without reading any history. It is the per-module signal
+and is always checked. `tag` names one git tag shared by every template of a
+pipeline, applied across every repo once the whole methods section is done; it
+is a record of which code state the section describes, not a per-module
+verification, and is why a methods or stats edit never needs a new one. A
+template whose pipeline has not been tagged yet carries `tag: none`, which
+scans and compiles — the tag is required at manuscript export, not here.
 
 A second reserved block, `# statistics`, is the numeric inventory: one line per
 key the prose cites, with a short description, in the order the module's stats
@@ -67,6 +80,12 @@ tables, passed at compile time as 'scope=path' pairs via --ifn-import-values.
 Each module still owns its own values.txt on its own version gate; the
 importing module's compile just reads from more than one.
 
+Bibliographic citations use Pandoc syntax in prose, for example
+`[@yaffeBriefAntibioticUse2025]`. Scan and compile validate every cited key
+against the `id` fields in the configured CSL JSON bibliography. Citation
+formatting happens once over the combined methods.md so all modules share one
+numbering sequence and bibliography.
+
 The former `step`, `table` and `param` hints are retired: steps are the
 `### steps` list and tables/params are `### notes` keys.
 
@@ -74,17 +93,24 @@ Subcommands:
   scan     validate a template and report the keys it requires
   compile  template + values -> paper.md, paper.tex, full.md, full.tex
 
-Every anomaly is fatal. Nothing is warned about and left in the prose.
+Every structural anomaly is fatal. The one exception is an unresolved value:
+a module is registered as soon as its template exists, so a section whose
+stats have not run yet still compiles, with the gaps rendered as bold NA
+behind a draft note leading every output. --strict restores the refusal for
+the final pass.
 """
 from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import re
 import sys
 import textwrap
 
+import artifacts as artifacts_mod
+from methods_registry import DRAFT_MARK
 from methods_to_tex import convert_body, escape_tex
 
 RESOLVED_TYPES = ("stat", "setting")
@@ -106,21 +132,39 @@ NOTE_KEYS = NOTE_LIST_KEYS + ("tools",)
 
 TOKEN = re.compile(r"\{\{([^{}]*)\}\}")
 EDIT_COMMENT = re.compile(r"\[\[(.*?)\]\]", re.S)
+CITATION_CLUSTER = re.compile(r"\[([^\]\n]*@[^\]\n]+)\]")
+CITATION_KEY = re.compile(r"(?<![A-Za-z0-9])@([A-Za-z0-9][A-Za-z0-9_.:+-]*)")
 # a POSIX bracket class such as [[:space:]] is regex syntax, not an edit
 # comment; notes recording a version parse are full of them
 POSIX_CLASS = re.compile(r"^:[a-z]+:$")
 
+# a contradiction the methods cannot fix on its own, because the main text is
+# the side that is wrong. Unlike an edit comment it does not block compiling:
+# it renders bold into every output so the author meets it while reading, and
+# both scan and compile list it so it cannot ship unnoticed
+MAIN_TEXT_FIX = re.compile(r"\*\*Main text fix:(.*?)\*\*", re.S)
+
 # recognized keys in the general block; 'dry run' may repeat, one per file;
 # 'imports' is an optional comma-separated list of module scopes cited by the
 # template beyond the module's own
-GENERAL_ONCE = ("module", "pipeline", "config", "tag")
+GENERAL_ONCE = ("module", "module version", "pipeline", "config", "tag")
 GENERAL_OPTIONAL_ONCE = ("imports",)
 GENERAL_MANY = ("dry run",)
 GENERAL_ALL = GENERAL_ONCE + GENERAL_OPTIONAL_ONCE + GENERAL_MANY
 
-# the git tag the methods were last verified at: major.minor, two minor digits,
-# namespaced by module so it cannot collide with a code tag
-RE_TAG = re.compile(r"^methods/([a-z][a-z0-9_]*)/v(\d+)\.(\d{2})$")
+# one tag per pipeline, applied to every repo once the whole methods section is
+# done. namespaced by pipeline so it cannot collide with a code tag, and carrying
+# a plain revision that only moves when the code it freezes changes materially
+RE_TAG = re.compile(r"^methods/([a-z][a-z0-9_]*)/v(\d+)$")
+
+# a pipeline whose methods section has not been frozen yet
+TAG_NONE = "none"
+
+# the module's own version is whatever it registers with, which is usually a
+# variable but is occasionally a literal
+RE_REGISTER = r"_register_module\s*,\s*{}\s*,\s*([^,)]+?)\s*,"
+RE_VAR_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
+RE_VAR_VALUE = r"^\s*{}\s*[?:]?=\s*(\S+)\s*$"
 
 RE_GENERAL = re.compile(r"^#\s+general\s*$", re.I)
 RE_STATISTICS = re.compile(r"^#\s+statistics\s*$", re.I)
@@ -136,6 +180,10 @@ RE_STAT_DECL = re.compile(r"^([a-z][a-z0-9_]*)\s*\[([^\]]*)\]\s*:\s*(.*)$")
 
 RE_MK_DECL = re.compile(r"^([A-Z][A-Z0-9_]*)\s*[?:+]?=")
 
+# a make variable named inside a notes bullet, which is where the template maps
+# each entity the prose introduces to the thing that holds it
+RE_NOTE_VAR = re.compile(r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]{2,})(?![A-Za-z0-9_])")
+
 STRUCTURED = re.compile(r"^\s*([-*+]\s|\d+\.\s|[|>#])")
 
 errors: list[str] = []
@@ -148,10 +196,9 @@ def fail(msg: str) -> None:
 def flush(context: str) -> None:
     if not errors:
         return
-    print(f"error: {context} failed with {len(errors)} problem(s):",
-          file=sys.stderr)
+    print(f"error: {context} failed with {len(errors)} problem(s):")
     for e in errors:
-        print(f"  - {e}", file=sys.stderr)
+        print(f"  - {e}")
     sys.exit(1)
 
 
@@ -161,13 +208,20 @@ def flush(context: str) -> None:
 
 
 class Step:
-    def __init__(self, num, var, cls, loop, desc, line):
+    def __init__(self, num, var, cls, loop, desc, line, at=None):
         self.num = num
         self.var = var
         self.cls = cls
         self.loop = loop
+        self.at = at
         self.desc = desc
         self.line = line
+
+    @property
+    def bracket(self) -> str:
+        extra = (f", loop: {self.loop}" if self.loop else "") + \
+                (f", at: {self.at}" if self.at else "")
+        return f"[{self.cls}{extra}]"
 
 
 class Stat:
@@ -237,7 +291,18 @@ class Block:
 
 
 def parse_classes(lineno, var, body):
-    """a bracket holds exactly one class, optionally plus 'loop: VAR'"""
+    """a bracket holds exactly one class, optionally plus 'loop: VAR', and
+    optionally ends with 'at: paragraph title' naming the later paragraph
+    whose prose describes the step"""
+    at = None
+    m = re.search(r"(?:^|,)\s*at:(.*)$", body, flags=re.IGNORECASE)
+    if m:
+        # the title runs to the end of the bracket, so it may hold commas
+        at = m.group(1).strip()
+        body = body[:m.start()]
+        if not at:
+            fail(f"line {lineno}: {var} has an empty 'at:' — name the title "
+                 f"of the later paragraph whose prose describes it")
     cls, loop, rejected = None, None, False
     for field in (f.strip() for f in body.split(",")):
         if not field:
@@ -258,11 +323,11 @@ def parse_classes(lineno, var, body):
             rejected = True
             fail(f"line {lineno}: {var} has unknown class '{field}' — "
                  f"expected one of {', '.join(CLASSES)}, "
-                 f"optionally with 'loop: VAR'")
+                 f"optionally with 'loop: VAR' and a final 'at: title'")
     if cls is None and not rejected:
         fail(f"line {lineno}: {var} has no class — one of "
              f"{', '.join(CLASSES)} is required")
-    return cls, loop
+    return cls, loop, at
 
 
 def parse(text: str) -> list[Block]:
@@ -393,15 +458,15 @@ def parse(text: str) -> list[Block]:
         owner = para if para is not None else block
         m = RE_STEP.match(s)
         if m:
-            cls, loop = parse_classes(lineno, m.group(2), m.group(3))
+            cls, loop, at = parse_classes(lineno, m.group(2), m.group(3))
             owner.steps.append(Step(int(m.group(1)), m.group(2), cls, loop,
-                                    m.group(4).strip(), lineno))
+                                    m.group(4).strip(), lineno, at))
             continue
         m = RE_STEP_UNNUMBERED.match(s)
         if m:
-            cls, loop = parse_classes(lineno, m.group(1), m.group(2))
+            cls, loop, at = parse_classes(lineno, m.group(1), m.group(2))
             owner.steps.append(Step(None, m.group(1), cls, loop,
-                                    m.group(3).strip(), lineno))
+                                    m.group(3).strip(), lineno, at))
             continue
         fail(f"line {lineno}: not a step line: {s[:60]!r} — expected "
              f"'NN  VAR  [class]: description' on one line")
@@ -414,15 +479,17 @@ def parse(text: str) -> list[Block]:
 #####################################################################################
 
 
-def check_general(blocks: list[Block], module: str) -> list[str]:
+def check_general(blocks: list[Block], module: str,
+                  module_dir: str | None = None,
+                  module_ver: str | None = None) -> tuple[list[str], str]:
     """the provenance header: what module, what pipeline, and the exact dry
     runs the step list was derived from. Returns the imports list (empty when
-    the template declares no cross-module citations)."""
+    the template declares no cross-module citations) and the tag."""
     generals = [b for b in blocks if b.is_general]
     if not generals:
         fail("template has no '# general' block; it must open with one "
              f"carrying {', '.join(GENERAL_ONCE)} and at least one 'dry run:'")
-        return []
+        return [], TAG_NONE
     if len(generals) > 1:
         fail(f"line {generals[1].line}: more than one '# general' block")
     if not blocks[0].is_general:
@@ -468,19 +535,77 @@ def check_general(blocks: list[Block], module: str) -> list[str]:
     if seen.get("module") not in (None, module):
         fail(f"line {g.line}: '# general' says module '{seen['module']}' but "
              f"the compile was invoked with '{module}'")
+    check_module_ver(g.line, module, module_dir, seen.get("module version"),
+                     module_ver)
     tag = seen.get("tag")
-    if tag is not None:
+    pipeline = seen.get("pipeline")
+    if tag is not None and tag != TAG_NONE:
         m = RE_TAG.match(tag)
         if not m:
             fail(f"line {g.line}: tag '{tag}' is malformed — expected "
-                 f"'methods/{module}/vN.NN'")
-        elif m.group(1) != module:
-            fail(f"line {g.line}: tag '{tag}' names module '{m.group(1)}' but "
-                 f"the compile was invoked with '{module}'")
+                 f"'methods/{pipeline}/vN', one tag shared by the whole "
+                 f"pipeline, or '{TAG_NONE}' until it is cut")
+        elif pipeline is not None and m.group(1) != pipeline:
+            fail(f"line {g.line}: tag '{tag}' names pipeline '{m.group(1)}' "
+                 f"but the template says '{pipeline}'")
     if n_runs == 0:
         fail(f"line {g.line}: '# general' lists no 'dry run:' — record the "
              f"file and the exact command behind the step list")
-    return imports
+    return imports, tag
+
+
+def read_module_ver(module: str, module_dir: str) -> str | None:
+    """the version the module registers with, read out of the interface file.
+
+    this is the fallback for when make did not pass --module-ver, and it can
+    only see the interface file's own default: a version the pipeline or the
+    config overrides reads here as whatever the module declared, which may be
+    a value that never takes effect. prefer --module-ver.
+
+    the second argument of _register_module is usually a variable name but is
+    sometimes the version itself, and a few modules register under a name other
+    than their own, so {MODULE}_VER is the last resort."""
+    ifn = os.path.join(module_dir, f"{module}_int.mk")
+    if not os.path.isfile(ifn):
+        return None
+    with open(ifn) as f:
+        text = f.read()
+    expr = None
+    m = re.search(RE_REGISTER.format(re.escape(module)), text)
+    if m:
+        expr = m.group(1).strip()
+        if not RE_VAR_NAME.match(expr):
+            return expr
+    else:
+        expr = f"{module.upper()}_VER"
+    m = re.search(RE_VAR_VALUE.format(re.escape(expr)), text, re.M)
+    return m.group(1) if m else None
+
+
+def check_module_ver(line: int, module: str, module_dir: str | None,
+                     declared: str | None, resolved: str | None = None) -> None:
+    """the declared module version is the per-module staleness signal: a bump of
+    the module's own version is drift that needs no git history to detect, while
+    a methods or stats edit leaves it alone and so stays quiet.
+
+    the version make resolved is authoritative when given, since a pipeline or a
+    config may override what the module declares and the overridden value is the
+    one that shaped the data."""
+    if declared is None:
+        return
+    if resolved:
+        cur = resolved
+    elif module_dir and os.path.isdir(module_dir):
+        cur = read_module_ver(module, module_dir)
+    else:
+        return
+    if cur is None:
+        fail(f"cannot read the version {module} registers with from "
+             f"{module_dir} — the template's 'module version:' cannot be checked")
+    elif cur != declared:
+        fail(f"line {line}: methods were written against {module} {declared} "
+             f"but it now resolves to {cur} — review the methods against the "
+             f"new version and set 'module version: {cur}'")
 
 
 def check_shape(blocks: list[Block]) -> None:
@@ -508,8 +633,6 @@ def check_shape(blocks: list[Block]) -> None:
             if p.num != j:
                 fail(f"line {p.line}: paragraph numbered {p.num} but is "
                      f"paragraph {j} of its block")
-            if not p.steps:
-                fail(f"line {p.line}: para {p.num} '{p.title}' has no steps")
             if p.has_text_part and not p.prose.strip():
                 fail(f"line {p.line}: para {p.num} '{p.title}' has an empty "
                      f"'### text'")
@@ -520,17 +643,61 @@ def check_shape(blocks: list[Block]) -> None:
 
 
 def check_silent_paras(blocks: list[Block]) -> None:
-    """a paragraph may skip its prose only when it is pure plumbing"""
+    """a paragraph may skip its prose only when it is pure plumbing, or when
+    every reportable step it carries is described later ('at:')"""
     for b in blocks:
         for p in b.paras:
             if p.prose.strip():
                 continue
-            loud = [s for s in p.steps if s.cls not in SILENT_CLASSES]
+            loud = [s for s in p.steps
+                    if s.cls not in SILENT_CLASSES and not s.at]
             if loud:
                 names = ", ".join(f"{s.var} [{s.cls}]" for s in loud[:3])
                 fail(f"line {p.line}: para {p.num} '{p.title}' has no prose "
                      f"but carries reportable steps ({names}) — write the "
                      f"text, or reclassify")
+
+
+def check_deferred(blocks: list[Block]) -> None:
+    """a step keeps its place in pipeline order, while 'at:' moves its prose
+    to the later paragraph that consumes what it produced. The target must be
+    a unique paragraph title of this module, strictly later, and carry prose"""
+    paras = [p for b in blocks if b.is_prose for p in b.paras]
+    by_title: dict[str, list[int]] = {}
+    for i, p in enumerate(paras):
+        by_title.setdefault(p.title.strip().lower(), []).append(i)
+    for b in blocks:
+        if b.is_not_used:
+            for s in b.steps:
+                if s.at:
+                    fail(f"line {s.line}: {s.var} is under '# not used' and "
+                         f"cannot carry 'at:' — it never ran")
+    for i, p in enumerate(paras):
+        for s in p.steps:
+            if not s.at:
+                continue
+            if s.cls in SILENT_CLASSES:
+                fail(f"line {s.line}: {s.var} is '{s.cls}', which no prose "
+                     f"describes; 'at:' is only for reportable steps")
+                continue
+            hits = by_title.get(s.at.strip().lower(), [])
+            if not hits:
+                fail(f"line {s.line}: {s.var} 'at: {s.at}' names no paragraph "
+                     f"of this module — use a '## para' title as written")
+                continue
+            if len(hits) > 1:
+                fail(f"line {s.line}: {s.var} 'at: {s.at}' matches "
+                     f"{len(hits)} paragraphs; paragraph titles must be "
+                     f"unique to be a target")
+                continue
+            target = paras[hits[0]]
+            if hits[0] <= i:
+                fail(f"line {s.line}: {s.var} 'at: {s.at}' points to its own "
+                     f"or an earlier paragraph; prose may only move later, "
+                     f"to where the step's output is consumed")
+            elif not target.prose.strip():
+                fail(f"line {s.line}: {s.var} 'at: {s.at}' targets a "
+                     f"paragraph with no prose")
 
 
 def check_numbering(blocks: list[Block]) -> None:
@@ -776,21 +943,134 @@ def check_edit_comments(text: str) -> None:
         fail(f"line {lineno}: unresolved edit comment [[{m.group(1).strip()}]]")
 
 
+def collect_citations(blocks: list[Block]) -> list[tuple[str, int, str]]:
+    """collect Pandoc citation keys from prose, where citations are rendered"""
+    found = []
+    for b in blocks:
+        for p in b.paras:
+            for lineno, line in p.text:
+                for cluster in CITATION_CLUSTER.finditer(line):
+                    for match in CITATION_KEY.finditer(cluster.group(1)):
+                        found.append((match.group(1), lineno, p.lead_in))
+    return found
+
+
+def load_reference_ids(ifn: str | None,
+                       citations: list[tuple[str, int, str]]) -> set[str] | None:
+    """validate a CSL JSON bibliography and return its Pandoc identifiers"""
+    if not ifn:
+        if citations:
+            fail("template cites references but --ifn-references was not passed")
+            return None
+        return set()
+    if not os.path.isfile(ifn):
+        fail(f"references file not found: {ifn}")
+        return set()
+    try:
+        with open(ifn) as f:
+            records = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        fail(f"cannot read CSL JSON references {ifn}: {e}")
+        return set()
+    if not isinstance(records, list):
+        fail(f"{ifn}: CSL JSON must be an array of reference objects")
+        return set()
+
+    ids = set()
+    for i, record in enumerate(records, start=1):
+        if not isinstance(record, dict):
+            fail(f"{ifn}: reference {i} is not an object")
+            continue
+        key = str(record.get("id", "")).strip()
+        if not key:
+            fail(f"{ifn}: reference {i} has no 'id'")
+        elif key in ids:
+            fail(f"{ifn}: duplicate reference id '{key}'")
+        else:
+            ids.add(key)
+    return ids
+
+
+def check_citations(blocks: list[Block],
+                    ifn_references: str | None) -> list[tuple[str, int, str]]:
+    citations = collect_citations(blocks)
+    ids = load_reference_ids(ifn_references, citations)
+    if ids is None:
+        return citations
+    seen = set()
+    for key, lineno, _lead_in in citations:
+        if key not in ids and key not in seen:
+            fail(f"line {lineno}: citation '@{key}' is absent from "
+                 f"{ifn_references}")
+        seen.add(key)
+    return citations
+
+
+def report_main_text_fixes(blocks: list[Block]) -> None:
+    found = [(p.lead_in, " ".join(m.group(1).split()))
+             for b in blocks for p in b.paras
+             for m in MAIN_TEXT_FIX.finditer(p.prose)]
+    if not found:
+        return
+    print(f"  main text fixes: {len(found)}")
+    for lead_in, text in found:
+        print(f"    {lead_in}: {text}")
+
+
+def note_vars(blocks: list[Block], module: str, module_dir: str) -> set[str]:
+    """the interface variables the notes name, which is the artifact candidate set"""
+    declared = mk_declarations(module_dir, f"{module}_int.mk") or set()
+    found = set()
+    for b in blocks:
+        for p in b.paras:
+            for _lineno, line in p.notes:
+                found |= set(RE_NOTE_VAR.findall(line))
+    return found & declared
+
+
+def report_artifacts(blocks: list[Block], module: str, module_dir: str | None,
+                     ifn: str) -> None:
+    """the shipped / omitted inventory, and the note entities it has not ruled on"""
+    _mod, groups = artifacts_mod.load(ifn)
+    flat = [a for g in groups for a in g.artifacts]
+    n_shipped = sum(1 for a in flat if a.shipped)
+    print(f"  artifacts: {n_shipped} shipped, {len(flat) - n_shipped} omitted "
+          f"over {len(groups)} group(s)")
+    for g in groups:
+        for a in g.artifacts:
+            tail = a.desc if a.shipped else a.reason
+            print(f"    {a.status:<8} {a.name:<26} [{g.scope}] {tail}")
+
+    # informational: an entity the prose introduces but the inventory never
+    # decided on is the one gap a comprehensive list cannot see by itself
+    if module_dir is None:
+        return
+    undecided = sorted(note_vars(blocks, module, module_dir)
+                       - {a.var for a in flat})
+    if undecided:
+        print(f"  note entities not declared as artifacts: "
+              f"{', '.join(undecided)}")
+
+
 #####################################################################################
 # values table
 #####################################################################################
 
 
-def load_values(ifn: str) -> dict[str, str]:
+def load_values(ifn: str, required: bool = True) -> dict[str, str]:
     if not os.path.exists(ifn):
-        print(f"error: values table not found: {ifn}", file=sys.stderr)
-        sys.exit(1)
+        if required:
+            print(f"error: values table not found: {ifn}")
+            sys.exit(1)
+        print(f"warning: values table not found: {ifn} — every value it "
+              f"would supply renders as NA")
+        return {}
     values = {}
     with open(ifn) as f:
         header = f.readline().rstrip("\n").split("\t")
         if header[:2] != ["key", "value"]:
             print(f"error: {ifn} must start with a 'key\\tvalue' header, "
-                  f"got {header}", file=sys.stderr)
+                  f"got {header}")
             sys.exit(1)
         for lineno, line in enumerate(f, start=2):
             line = line.rstrip("\n")
@@ -815,17 +1095,31 @@ def load_values(ifn: str) -> dict[str, str]:
 
 
 def check_values(tokens: list[Token], values: dict[tuple[str, str], str],
-                 module: str) -> None:
+                 module: str, strict: bool) -> list[Token]:
+    """report what the values table does not cover, and return it.
+
+    Unresolved values do not block the compile unless --strict is given: a
+    module is registered as soon as its template exists, so a section whose
+    stats have not run yet must still render. The gaps surface as bold NA in
+    the prose and as a Draft note at the head of every doc, which is louder
+    in the compiled pdf than a refusal is in a terminal."""
+    report = fail if strict else (
+        lambda msg: print(f"warning: {msg}"))
     required = {(t.scope, t.key) for t in tokens}
+    unresolved, seen = [], set()
     for t in tokens:
-        if (t.scope, t.key) not in values:
-            fail(f"line {t.line}: {t.raw} has no entry in the values table "
-                 f"for scope '{t.scope}'")
+        if (t.scope, t.key) in values or (t.scope, t.key) in seen:
+            continue
+        seen.add((t.scope, t.key))
+        unresolved.append(t)
+        report(f"line {t.line}: {t.raw} has no entry in the values table "
+               f"for scope '{t.scope}'")
     # only the module's own values are checked for unreferenced keys;
     # imported modules validate their own values via their own scan+compile
     own_extra = sorted(k for k in set(values) - required if k[0] == module)
     for _scope, name in own_extra:
-        fail(f"values table key '{name}' is not referenced by the template")
+        report(f"values table key '{name}' is not referenced by the template")
+    return unresolved
 
 
 #####################################################################################
@@ -835,7 +1129,10 @@ def check_values(tokens: list[Token], values: dict[tuple[str, str], str],
 
 def tidy(s: str) -> str:
     s = re.sub(r"\s+", " ", s)
-    s = re.sub(r"\s+([.,;:!?)\]])", r"\1", s)
+    # a dot that starts a word is part of it, as in a ".srt file", so only a dot
+    # acting as punctuation loses the space in front of it
+    s = re.sub(r"\s+\.(?![0-9A-Za-z])", ".", s)
+    s = re.sub(r"\s+([,;:!?)\]])", r"\1", s)
     s = re.sub(r"([(\[])\s+", r"\1", s)
     return s.strip()
 
@@ -863,11 +1160,22 @@ def substitute(text: str, values: dict[tuple[str, str], str],
             return m.group(0)
         _ttype, scope, name = fields
         key = (scope, name)
+        # a value the stats rule has not produced renders bold, so a gap is
+        # impossible to skim past in a compiled pdf
         if key not in values:
-            return m.group(0)
+            return f"**{body}:NA**" if for_full else "**NA**"
         return f"`{body}:{values[key]}`" if for_full else values[key]
 
     return TOKEN.sub(repl, text)
+
+
+def draft_banner(unresolved: list[Token], n_tokens: int, module: str) -> str:
+    """the one line that says a section is not finished, in every output"""
+    if not unresolved:
+        return ""
+    return (f"{DRAFT_MARK} {len(unresolved)} of {n_tokens} values are "
+            f"unresolved and render as NA below. Run p_methods_stats to "
+            f"measure {module} before using this section.**")
 
 
 def render_paper_md(blocks: list[Block], values: dict[str, str],
@@ -924,8 +1232,7 @@ def render_full_tex(blocks: list[Block], values: dict[str, str]) -> str:
         parts.append(f"\\subsubsection{{{escape_tex(b.heading)}}}")
         for p in b.paras:
             parts.append("\n".join(
-                f"% {s.num or ''} {s.var} [{s.cls}"
-                f"{', loop: ' + s.loop if s.loop else ''}]: {s.desc}".strip()
+                f"% {s.num or ''} {s.var} {s.bracket}: {s.desc}".strip()
                 for s in p.steps))
             prose = p.prose.strip()
             if prose:
@@ -947,26 +1254,30 @@ def prepare(args):
     raw = open(args.ifn_template).read()
     check_edit_comments(raw)
     blocks = parse(raw)
-    imports = check_general(blocks, args.module)
+    imports, tag = check_general(blocks, args.module,
+                                 args.module_dir[0] if args.module_dir else None,
+                                 args.module_ver)
     check_shape(blocks)
     check_numbering(blocks)
     check_classes(blocks)
     check_duplicates(blocks)
+    check_deferred(blocks)
     check_silent_paras(blocks)
     check_stray_tokens(blocks)
     tokens = collect_tokens(blocks, args.module, imports)
     decls = check_statistics(blocks, args.module, tokens)
+    citations = check_citations(blocks, args.ifn_references)
     if args.module_dir:
         check_step_vars(blocks, args.module_dir)
         check_note_vars(blocks, args.module, args.module_dir[0])
-    return raw, blocks, tokens, imports, decls
+    return raw, blocks, tokens, citations, imports, decls, tag
 
 
 def cmd_scan(args) -> None:
     """validate the template and report what it requires. Nothing is written:
     the key inventory is the template's own '# statistics' block, and a derived
     copy of it on disk would only drift."""
-    _raw, blocks, tokens, _imports, _decls = prepare(args)
+    _raw, blocks, tokens, citations, _imports, _decls, tag = prepare(args)
     flush(f"scan of {args.ifn_template}")
 
     seen = {}
@@ -978,23 +1289,48 @@ def cmd_scan(args) -> None:
     n_stat = sum(1 for t in rows if t.type == "stat")
     n_steps = sum(len(p.steps) for b in blocks for p in b.paras)
     n_unused = sum(len(b.steps) for b in blocks if b.is_not_used)
-    print(f"scanned {args.ifn_template}", file=sys.stderr)
+    print(f"scanned {args.ifn_template}")
+    print(f"  tag: {tag}"
+          f"{' (pipeline not frozen, cannot export)' if tag == TAG_NONE else ''}")
     print(f"  blocks: {len([b for b in blocks if b.is_prose])}   "
-          f"paragraphs: {sum(len(b.paras) for b in blocks)}", file=sys.stderr)
-    print(f"  steps: {n_steps} numbered, {n_unused} not used",
-          file=sys.stderr)
-    print(f"  required keys: {n_stat} stat, {len(rows) - n_stat} setting",
-          file=sys.stderr)
+          f"paragraphs: {sum(len(b.paras) for b in blocks)}")
+    print(f"  steps: {n_steps} numbered, {n_unused} not used")
+    deferred = [(p, s) for b in blocks for p in b.paras for s in p.steps
+                if s.at]
+    if deferred:
+        print(f"  described later: {len(deferred)} step(s)")
+        for p, s in deferred:
+            print(f"    {s.num:02d} {s.var} ({p.lead_in}) -> {s.at}")
+    print(f"  required keys: {n_stat} stat, {len(rows) - n_stat} setting")
     for t in rows:
         scope = "" if t.scope == args.module else f"{t.scope}:"
-        print(f"    {t.type:<7} {scope}{t.key} <- {t.lead_in}",
-              file=sys.stderr)
+        print(f"    {t.type:<7} {scope}{t.key} <- {t.lead_in}")
+    unique_citations = sorted({key for key, _line, _lead in citations})
+    print(f"  citations: {len(unique_citations)} reference(s), "
+          f"{len(citations)} mention(s)")
+    for key in unique_citations:
+        leads = sorted({lead for cited, _line, lead in citations if cited == key})
+        print(f"    @{key} <- {', '.join(leads)}")
+    if args.ifn_artifacts:
+        report_artifacts(blocks, args.module,
+                         args.module_dir[0] if args.module_dir else None,
+                         args.ifn_artifacts)
+    report_main_text_fixes(blocks)
 
 
 def cmd_compile(args) -> None:
-    raw, blocks, tokens, imports, _decls = prepare(args)
+    raw, blocks, tokens, _citations, imports, _decls, tag = prepare(args)
 
-    own = load_values(args.ifn_values)
+    # an untagged template compiles: the pipeline's tag is cut once, after every
+    # module is done, so requiring it here would block reading values against the
+    # prose. keeping untagged work out of the paper belongs at manuscript export,
+    # where the tag can also be checked against the repos it is meant to freeze;
+    # that check is not built yet, so for now this is a warning only.
+    if tag == TAG_NONE:
+        print(f"note: {args.ifn_template} carries no tag; its pipeline has not "
+              f"been frozen yet and must not be exported")
+
+    own = load_values(args.ifn_values, required=args.strict)
     values: dict[tuple[str, str], str] = {
         (args.module, k): v for k, v in own.items()}
 
@@ -1004,47 +1340,65 @@ def cmd_compile(args) -> None:
         scope, path = scope.strip(), path.strip()
         if not sep or not scope or not path:
             print(f"error: --ifn-import-values takes 'scope=path' pairs, "
-                  f"got {pair!r}", file=sys.stderr)
+                  f"got {pair!r}")
             sys.exit(1)
         if scope == args.module:
             print(f"error: --ifn-import-values scope {scope!r} is the module "
-                  f"itself; use --ifn-values", file=sys.stderr)
+                  f"itself; use --ifn-values")
             sys.exit(1)
         if scope in provided:
-            print(f"error: --ifn-import-values scope {scope!r} given twice",
-                  file=sys.stderr)
+            print(f"error: --ifn-import-values scope {scope!r} given twice")
             sys.exit(1)
         provided[scope] = path
-        for k, v in load_values(path).items():
+        for k, v in load_values(path, required=args.strict).items():
             values[(scope, k)] = v
 
     missing = sorted(set(imports) - provided.keys())
     if missing:
         print(f"error: template imports {missing} but no "
-              f"--ifn-import-values pair was passed for them", file=sys.stderr)
+              f"--ifn-import-values pair was passed for them")
         sys.exit(1)
     extra = sorted(provided.keys() - {args.module} - set(imports))
     if extra:
         print(f"error: --ifn-import-values passed for {extra} but the "
-              f"template does not declare them under 'imports:'",
-              file=sys.stderr)
+              f"template does not declare them under 'imports:'")
         sys.exit(1)
 
-    check_values(tokens, values, args.module)
+    unresolved = check_values(tokens, values, args.module, args.strict)
     flush(f"compile of {args.ifn_template}")
 
     paper_md = render_paper_md(blocks, values, args.width)
+    full_md = render_full_md(raw, values)
+    full_tex = render_full_tex(blocks, values)
+
+    # the draft note leads every output, including the paper: the pdf is how
+    # the section gets read, so that is where an unfinished one must say so
+    banner = draft_banner(unresolved, len({(t.scope, t.key) for t in tokens}),
+                          args.module)
+    if banner:
+        print(f"warning: {banner.strip('*')}")
+        paper_md = f"{banner}\n\n{paper_md}"
+        full_md = f"{banner}\n\n{full_md}"
+        full_tex = f"{convert_body(banner).strip()}\n\n{full_tex}"
+
+    # the artifact inventory reaches the full docs only: the paper's prose never
+    # describes what was shipped, and the full docs are read by a developer
+    if args.ifn_artifacts:
+        full_md += "\n" + artifacts_mod.render_artifacts_md(args.ifn_artifacts) + "\n"
+        full_tex += "\n" + artifacts_mod.render_artifacts_tex(args.ifn_artifacts) + "\n"
+
     outputs = [
         (args.ofn_paper_md, paper_md),
         (args.ofn_paper_tex, convert_body(paper_md).strip() + "\n"),
-        (args.ofn_full_md, render_full_md(raw, values)),
-        (args.ofn_full_tex, render_full_tex(blocks, values)),
+        (args.ofn_full_md, full_md),
+        (args.ofn_full_tex, full_tex),
     ]
     for ofn, body in outputs:
         os.makedirs(os.path.dirname(os.path.abspath(ofn)), exist_ok=True)
         with open(ofn, "w") as f:
             f.write(body)
-        print(f"wrote {ofn}", file=sys.stderr)
+        print(f"wrote {ofn}")
+    report_main_text_fixes(blocks)
 
 
 def main() -> None:
@@ -1060,6 +1414,16 @@ def main() -> None:
     s.add_argument("--module-dir", default=[], nargs="+",
                    help="the module's own dir first, then any other module "
                         "dirs whose steps appear in the template")
+    s.add_argument("--module-ver", default=None,
+                   help="the module's version as make resolves it; pass "
+                        "$({MODULE}_VER) so pipeline and config overrides are "
+                        "seen. falls back to parsing the interface file")
+    s.add_argument("--ifn-artifacts", default=None,
+                   help="the module's artifacts.json; validated and reported "
+                        "when given")
+    s.add_argument("--ifn-references", default=None,
+                   help="CSL JSON bibliography used to validate Pandoc "
+                        "citation keys in prose")
     s.set_defaults(func=cmd_scan)
 
     c = sub.add_parser("compile", help="write the paper and full docs")
@@ -1077,14 +1441,27 @@ def main() -> None:
     c.add_argument("--module-dir", default=[], nargs="+",
                    help="the module's own dir first, then any other module "
                         "dirs whose steps appear in the template")
+    c.add_argument("--module-ver", default=None,
+                   help="the module's version as make resolves it; pass "
+                        "$({MODULE}_VER) so pipeline and config overrides are "
+                        "seen. falls back to parsing the interface file")
+    c.add_argument("--ifn-artifacts", default=None,
+                   help="the module's artifacts.json; its inventory is appended "
+                        "to the full docs when given")
+    c.add_argument("--ifn-references", default=None,
+                   help="CSL JSON bibliography used to validate Pandoc "
+                        "citation keys in prose")
     c.add_argument("--width", type=int, default=90,
                    help="wrap width of the paper doc (default 90)")
+    c.add_argument("--strict", action="store_true",
+                   help="refuse to compile an unresolved value instead of "
+                        "rendering it as NA behind a draft note. for the "
+                        "final pass, when the section is meant to be done")
     c.set_defaults(func=cmd_compile)
 
     args = ap.parse_args()
     if not os.path.exists(args.ifn_template):
-        print(f"error: template not found: {args.ifn_template}",
-              file=sys.stderr)
+        print(f"error: template not found: {args.ifn_template}")
         sys.exit(1)
     args.func(args)
 
