@@ -9,7 +9,11 @@ here rather than by hand:
   draft     the numbered `### steps` lines, in the order the pipeline ran them,
             plus a `# not used` list of everything declared but never reached
   check     the same comparison against an existing template, so a renamed or
-            dropped step becomes an error instead of stale prose
+            dropped step becomes an error instead of stale prose; also fails
+            when the runs predate the template's module version
+  refresh   the container commands that remake a template's dry runs into a
+            scratch dir, from the template's own `dry run:` lines
+  compare   the step-sequence diff between saved and refreshed runs
 
 A step is identified by its make done variable, which is a total key: in
 practice every rule with a recipe declares one. The join works like this:
@@ -137,22 +141,45 @@ def read_runs(runs: list[str]) -> list[tuple[str, str]]:
     return out
 
 
-def read_resolved(path: str) -> dict[str, str]:
-    """VAR -> path, from either a plain 'VAR: path' list or `make -n lss`"""
+MANUAL_RESOLVED = "resolved_manual.txt"
+
+
+def read_resolved_file(path: str) -> dict[str, str]:
+    """VAR -> path from one file, mixing `make -n lss` lines and plain
+    'VAR: path' lines freely; a var that resolved to nothing is skipped"""
     if not os.path.exists(path):
         die(f"resolution file not found: {path}")
-    text = open(path).read()
     out = {}
-    for m in RE_RESOLVED.finditer(text):
-        out[m.group(1)] = m.group(2)
-    if out:
-        return out
-    for line in text.split("\n"):
-        m = RE_PLAIN_RESOLVED.match(line.strip())
+    for line in open(path):
+        m = RE_RESOLVED.match(line.rstrip("\n"))
+        if not m:
+            m = RE_PLAIN_RESOLVED.match(line.strip())
         if m:
             out[m.group(1)] = m.group(2)
     if not out:
         die(f"no 'VAR: path' pairs found in {path}")
+    return out
+
+
+def resolved_files(paths: list[str]) -> list[str]:
+    """the given files, plus a resolved_manual.txt beside the first one.
+
+    The manual file holds the paths `resolve` cannot compute (a directory
+    passed in by a calling module, a manager-only variable). Keeping them apart
+    lets resolved.txt be regenerated on every refresh without losing them.
+    """
+    out = list(paths)
+    manual = os.path.join(os.path.dirname(paths[0]), MANUAL_RESOLVED)
+    if os.path.exists(manual) and manual not in out:
+        out.append(manual)
+    return out
+
+
+def read_resolved(paths: list[str]) -> dict[str, str]:
+    """VAR -> path over several files; later files override earlier ones"""
+    out = {}
+    for path in resolved_files(paths):
+        out.update(read_resolved_file(path))
     return out
 
 
@@ -177,9 +204,9 @@ def truncation_notes(runs: list[str]) -> list[str]:
     return out
 
 
-def build(module_dirs: list[str], runs: list[str], resolved_fn: str):
+def build(module_dirs: list[str], runs: list[str], resolved_fns: list[str]):
     declared = mk_done_vars(module_dirs)
-    resolved = read_resolved(resolved_fn)
+    resolved = read_resolved(resolved_fns)
     ran = read_runs(runs)
 
     missing = [v for v in declared if v not in resolved]
@@ -342,6 +369,100 @@ def cmd_draft(args) -> None:
               f"{' …' if len(missing) > 8 else ''}")
 
 
+def template_general(path: str) -> tuple[str | None, list[tuple[str, str]]]:
+    """(module version, [(run file, command)]) from a template's # general"""
+    version = None
+    runs = []
+    for line in open(path):
+        s = line.strip()
+        if s.startswith("# ") and not re.match(r"^#\s+general\b", s):
+            break
+        m = re.match(r"^module version:\s*(\S+)", s)
+        if m:
+            version = m.group(1)
+        m = re.match(r"^dry run:\s*(\S+)\s*<-\s*(.+)$", s)
+        if m:
+            runs.append((m.group(1), m.group(2).strip()))
+    return version, runs
+
+
+def stale_version(template: str, runs: list[str]) -> str | None:
+    """a problem line when no START path of the runs carries the template's
+    module version: the runs predate a bump even if every step still lines up"""
+    version, _ = template_general(template)
+    if not version:
+        print(f"warning: {template} has no 'module version:' line; "
+              f"dry-run version not checked")
+        return None
+    pat = re.compile(r"(?<![\w.])" + re.escape(version) + r"(?![\w.])")
+    if any(pat.search(p) for _run, p in read_runs(runs)):
+        return None
+    return (f"no dry-run step carries module version {version}; the runs "
+            f"predate the current version, refresh them")
+
+
+def cmd_refresh(args) -> None:
+    """print the container commands that remake a template's dry runs.
+
+    The commands come from the template's own `dry run:` lines, so a refresh
+    repeats exactly what was saved. Output goes to --odir, never over the saved
+    runs: compare first, then copy.
+    """
+    _version, runs = template_general(args.ifn_template)
+    if not runs:
+        die(f"no 'dry run:' lines in {args.ifn_template}")
+    container = args.container or f"{args.pipeline}-{args.config}-ro"
+    pipeline_dir = args.pipeline_dir or f"/makeshift/pipes/dev/p_{args.pipeline}"
+    print(f"mkdir -p {args.odir}")
+    for run_file, command in runs:
+        print(f"docker exec {container} bash -c 'cd {pipeline_dir} && "
+              f"{command}' > {os.path.join(args.odir, run_file)} 2>&1")
+
+
+RE_VERSION_PART = re.compile(r"v\d+(\.\d+)*")
+
+
+def step_sequence(path: str) -> list[str]:
+    """START paths of one run with items and versions normalized out"""
+    out = []
+    for _run, p in read_runs([path]):
+        p = RE_VERSION_PART.sub("{ver}", normalize(p))
+        if p not in out:
+            out.append(p)
+    return out
+
+
+def cmd_compare(args) -> None:
+    """step-sequence diff between saved and refreshed runs, per run file.
+
+    Versions and items are normalized out, so what remains is structural drift:
+    a step added, dropped, renamed or reordered.
+    """
+    import difflib
+    names = sorted(set(os.listdir(args.old_dir)) | set(os.listdir(args.new_dir)))
+    names = [n for n in names if re.match(r"^\d+_.*\.txt$", n)]
+    if not names:
+        die(f"no NN_*.txt runs in {args.old_dir} or {args.new_dir}")
+    drift = 0
+    for name in names:
+        old = os.path.join(args.old_dir, name)
+        new = os.path.join(args.new_dir, name)
+        if not os.path.exists(old) or not os.path.exists(new):
+            print(f"{name}: only in {'new' if os.path.exists(new) else 'old'}")
+            drift += 1
+            continue
+        a, b = step_sequence(old), step_sequence(new)
+        if a == b:
+            print(f"{name}: same {len(a)} step(s)")
+            continue
+        drift += 1
+        print(f"{name}: {len(a)} -> {len(b)} step(s)")
+        for line in difflib.unified_diff(a, b, lineterm="", n=0):
+            if not line.startswith(("---", "+++", "@@")):
+                print(f"  {line}")
+    print(f"{drift} of {len(names)} run(s) drifted")
+
+
 def cmd_check(args) -> None:
     ordered, not_used, unmatched, _missing = build(
         args.module_dir, args.ifn_runs, args.ifn_resolved)
@@ -376,6 +497,9 @@ def cmd_check(args) -> None:
     for v in sorted(set(not_used) - listed_unused - set(listed)):
         problems.append(f"{v} is declared, never ran, and is not under "
                         f"'# not used'")
+    stale = stale_version(args.ifn_template, args.ifn_runs)
+    if stale:
+        problems.append(stale)
 
     for run_file, path in unmatched:
         print(f"warning: {run_file}: no done variable matches {path}")
@@ -418,6 +542,27 @@ def main() -> None:
                    help="default /makeshift/pipes/dev/p_{pipeline}")
     r.set_defaults(func=cmd_resolve)
 
+    f = sub.add_parser("refresh",
+                       help="print the container commands that remake a "
+                            "template's dry runs into a scratch dir")
+    f.add_argument("--ifn-template", required=True)
+    f.add_argument("--pipeline", required=True)
+    f.add_argument("--config", required=True)
+    f.add_argument("--odir", required=True,
+                   help="scratch dir for the new runs, e.g. /tmp/dry/{module}")
+    f.add_argument("--container", default=None,
+                   help="default {pipeline}-{config}-ro")
+    f.add_argument("--pipeline-dir", default=None,
+                   help="default /makeshift/pipes/dev/p_{pipeline}")
+    f.set_defaults(func=cmd_refresh)
+
+    c = sub.add_parser("compare",
+                       help="step-sequence diff between saved and refreshed "
+                            "runs")
+    c.add_argument("--old-dir", required=True)
+    c.add_argument("--new-dir", required=True)
+    c.set_defaults(func=cmd_compare)
+
     for name, fn in (("draft", cmd_draft), ("check", cmd_check)):
         p = sub.add_parser(name)
         p.add_argument("--module", required=True)
@@ -426,8 +571,10 @@ def main() -> None:
                             "dry runs call into")
         p.add_argument("--ifn-runs", required=True, nargs="+",
                        help="saved dry runs, in pipeline order")
-        p.add_argument("--ifn-resolved", required=True,
-                       help="'VAR: path' pairs, or the output of make -n lss")
+        p.add_argument("--ifn-resolved", required=True, nargs="+",
+                       help="'VAR: path' pairs and/or make -n lss output; a "
+                            f"{MANUAL_RESOLVED} beside the first file is "
+                            "added automatically")
         if name == "draft":
             p.add_argument("--pipeline", required=True)
             p.add_argument("--config", required=True)

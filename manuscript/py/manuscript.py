@@ -203,7 +203,8 @@ def emit_captions_txt(figures, supp_figures, odir):
 
 
 def write_methods_md(ofn, entries, label, banner=""):
-    """concatenate rendered bodies under a '## title' per registered module.
+    """concatenate rendered bodies under a '## title' per registered module;
+    consecutive modules with the same title share one heading.
 
     no rule between sections: the heading already separates them, and pandoc
     renders a markdown rule as a centred line across the page in the PDF. the
@@ -212,10 +213,14 @@ def write_methods_md(ofn, entries, label, banner=""):
         f.write("# Methods\n\n")
         if banner:
             f.write(f"**{banner}**\n\n")
+        prev = None
         for i, (title, body) in enumerate(entries):
             if i > 0:
                 f.write("\n")
-            f.write(f"## {title}\n\n{body}\n")
+            if title != prev:
+                f.write(f"## {title}\n\n")
+            prev = title
+            f.write(f"{body}\n")
     print(f"generated: {ofn} ({len(entries)} module(s), {label})")
 
 

@@ -97,6 +97,19 @@ EXTS = {
 
 KINDS = tuple(EXTS)
 
+# supp indices are free-form but must be dot-separated numeric parts so the
+# sort order matches human intuition (1 < 1.1 < 1.10 < 2 < 10). the parser
+# rejects anything with letters or empty segments up front, and supp_sort_key
+# assumes this shape
+SUPP_INDEX_RE = re.compile(r"^\d+(\.\d+)*$")
+
+
+def supp_sort_key(idx: str) -> tuple:
+    """natural sort: each dot-separated part becomes an int, and a shorter
+    prefix sorts before a longer extension of itself. so '1' precedes '1.1'
+    which precedes '1.10' which precedes '2'."""
+    return tuple(int(p) for p in idx.split("."))
+
 # a column whitelist means reading the table, so it is for config-scale ones
 PROJECT_MAX_BYTES = 64 * 1000 * 1000
 
@@ -105,7 +118,8 @@ WORK_SUBDIR = ".work"
 INSTANCE_COLS = ["module", "group", "artifact", "kind", "status",
                  "tag", "size", "found", "columns", "rel", "src"]
 CLASS_COLS = ["module", "group", "artifact", "kind", "keys", "status",
-              "reason", "n", "total_size", "columns", "desc", "template"]
+              "reason", "n", "total_size", "columns", "supp",
+              "desc", "template"]
 
 ERRORS: list[str] = []
 
@@ -153,8 +167,13 @@ class Artifact:
         self.superseded_by = d.get("superseded_by")
         self.note = str(d.get("note", "")).strip()
         self.columns = [str(c).strip() for c in d.get("columns", [])]
+        # supp is either absent or a free-form index string. Numeric-with-dots
+        # is recommended (1, 1.1, 2, 10) and is what supp_sort_key expects
+        supp = d.get("supp")
+        self.supp = "" if supp in (None, False) else str(supp).strip()
         self.unknown = sorted(set(d) - {"name", "var", "kind", "desc", "omit",
-                                        "superseded_by", "note", "columns"})
+                                        "superseded_by", "note", "columns",
+                                        "supp"})
 
     @property
     def shipped(self) -> bool:
@@ -238,6 +257,15 @@ def validate(ifn: str, module: str, groups: list[Group]) -> None:
                      f"applies to kind 'table'")
             if len(set(a.columns)) != len(a.columns):
                 fail(f"{where}: 'columns' lists a column twice")
+            if a.supp and a.kind != "table":
+                fail(f"{where}: 'supp' marks a supplementary table, so it "
+                     f"only applies to kind 'table'")
+            if a.supp and not a.shipped:
+                fail(f"{where}: 'supp' is set but the artifact is omitted; a "
+                     f"supplementary table must ship")
+            if a.supp and not SUPP_INDEX_RE.match(a.supp):
+                fail(f"{where}: 'supp' index {a.supp!r} is malformed — use "
+                     f"digits and dots (e.g. '1', '1.1', '10')")
             if a.unknown:
                 fail(f"{where}: unknown field(s) {', '.join(a.unknown)}")
             if a.name in names:
@@ -441,6 +469,159 @@ def cmd_groups(args) -> None:
     print(" ".join(enumerate_pairs(args.ifn_methods, args.src_dir, quiet=True)))
 
 
+def enumerate_supp(ifn_methods: str, src_dir: str) -> list[tuple[str, str, str]]:
+    """pipeline-wide list of supp tables as (module, name, index) tuples. See
+    enumerate_supp_full for the rich form."""
+    return [(r["module"], r["name"], r["supp"])
+            for r in enumerate_supp_full(ifn_methods, src_dir)]
+
+
+def enumerate_supp_full(ifn_methods: str, src_dir: str) -> list[dict]:
+    """pipeline-wide list of supp tables, sorted by supp_sort_key so a reader
+    sees them in the same order the paper does. Each dict carries the index,
+    the module, the artifact name, the make variable, the kind (for the
+    exported extension), and the description. Duplicate indices fail loudly."""
+    _pipeline, entries = methods_registry.load(ifn_methods)
+    collected: list[dict] = []
+    for entry in entries:
+        module = entry.module
+        ifn = os.path.join(src_dir, module, "artifacts.json")
+        if not os.path.exists(ifn):
+            continue
+        mod, groups = load(ifn)
+        if mod != module:
+            die(f"{ifn}: declares module {mod!r} but sits under {module!r}")
+        for g in groups:
+            if a_supp_in_keyed_group(g):
+                die(f"{ifn}: group {g.id!r} carries keys {g.keys}; supp tables "
+                    f"must be keyless (a paper cites one table, not one per "
+                    f"instance). move the supp artifact to a keyless group")
+            for a in g.artifacts:
+                if a.supp:
+                    collected.append({"module": module, "name": a.name,
+                                      "supp": a.supp, "var": a.var,
+                                      "kind": a.kind, "desc": a.desc})
+    seen: dict[str, tuple[str, str]] = {}
+    for r in collected:
+        idx = r["supp"]
+        if idx in seen:
+            m0, n0 = seen[idx]
+            die(f"supp index {idx!r} is used by {m0}:{n0} and "
+                f"{r['module']}:{r['name']}; each supp index must be unique "
+                f"across the pipeline")
+        seen[idx] = (r["module"], r["name"])
+    return sorted(collected, key=lambda r: supp_sort_key(r["supp"]))
+
+
+def a_supp_in_keyed_group(g: "Group") -> bool:
+    return bool(g.keys) and any(a.supp for a in g.artifacts)
+
+
+def cmd_supp(args) -> None:
+    """one row per supp artifact: module, name, index. Stable across compiles
+    for the same registry, and readable by methods_render.py at compile time."""
+    for module, name, idx in enumerate_supp(args.ifn_methods, args.src_dir):
+        print(f"{module}\t{name}\t{idx}")
+
+
+def cmd_supp_vars(args) -> None:
+    """space-separated list of the make variables that hold the source paths
+    of the supp tables. the make rule expands each with $() and passes them
+    to supp_export as 'MODULE:NAME=path' pairs."""
+    rows = enumerate_supp_full(args.ifn_methods, args.src_dir)
+    print(" ".join(f"{r['module']}:{r['name']}:{r['var']}" for r in rows))
+
+
+def cmd_supp_export(args) -> None:
+    """copy every supp table to supp_tables/supp_table_{index}_{name}.{ext},
+    and write supp_tables.txt. this bypasses the full artifact measure/copy
+    pass -- the manuscript ships supp tables far more often than a bundle,
+    so they get their own light path."""
+    rows = enumerate_supp_full(args.ifn_methods, args.src_dir)
+    paths: dict[tuple[str, str], str] = {}
+    for pair in args.pairs:
+        head, sep, val = pair.partition("=")
+        if not sep:
+            die(f"expected MODULE:NAME=/path, got {pair!r}")
+        mod, sep2, name = head.partition(":")
+        if not sep2:
+            die(f"expected MODULE:NAME=/path, got {pair!r}")
+        paths[(mod.strip(), name.strip())] = val.strip()
+
+    supp_dir = os.path.join(args.odir, "supp_tables")
+    os.makedirs(supp_dir, exist_ok=True)
+    published: list[dict] = []
+    for r in rows:
+        key = (r["module"], r["name"])
+        src = paths.get(key)
+        if not src:
+            die(f"no --pairs entry for {r['module']}:{r['name']}; pass "
+                f"'{r['module']}:{r['name']}=$({r['var']})' from make")
+        if not os.path.isfile(src):
+            die(f"supp source not found: {src} (for {r['module']}:{r['name']})")
+        ext = EXTS.get(r["kind"], "")
+        fn = f"supp_table_{r['supp']}_{r['name']}{ext}"
+        rel = os.path.join("supp_tables", fn)
+        dst = os.path.join(args.odir, rel)
+        with open(src, "rb") as fs, open(dst, "wb") as fd:
+            fd.write(fs.read())
+        published.append({"supp": r["supp"], "path": rel,
+                          "module": r["module"], "artifact": r["name"],
+                          "src_path": src, "desc": r["desc"]})
+        print(f"  {r['supp']:<6} {rel:<48} {human(os.path.getsize(src)):>8}")
+    write_table(os.path.join(args.odir, "supp_tables.txt"),
+                ["supp", "path", "module", "artifact", "src_path", "desc"],
+                published)
+    print(f"exported {len(published)} supp table(s) to {supp_dir}")
+
+
+def publish_supp_folder(odir: str, classes: list[dict],
+                        instances: list[dict]) -> None:
+    """copy every supp table into 'supp_tables/table_{index}{ext}' beside the
+    normal export, and write 'supp_tables.txt' at the bundle root mapping
+    'Supp. Table N' to the file, its source and its description.
+
+    hard copies rather than symlinks: a bundle that reviewers zip and email
+    is not the place to trust link semantics."""
+    supp_classes = {(c["module"], c["artifact"]): c
+                    for c in classes if c.get("supp")}
+    if not supp_classes:
+        return
+    supp_dir = os.path.join(odir, "supp_tables")
+    os.makedirs(supp_dir, exist_ok=True)
+
+    rows: list[dict] = []
+    seen_indices: set[str] = set()
+    for i in instances:
+        if i["status"] != "shipped" or i["found"] != "1":
+            continue
+        key = (i["module"], i["artifact"])
+        c = supp_classes.get(key)
+        if c is None:
+            continue
+        idx = c["supp"]
+        if idx in seen_indices:
+            die(f"supp index {idx!r} appears more than once during publish; "
+                f"a keyed group with per-instance supp tables is not supported")
+        seen_indices.add(idx)
+        ext = EXTS.get(c["kind"], "")
+        rel = os.path.join("supp_tables", f"supp_table_{idx}_{i['artifact']}{ext}")
+        src = os.path.join(odir, i["rel"])
+        dst = os.path.join(odir, rel)
+        if not os.path.isfile(src):
+            die(f"supp source not exported: {src}")
+        # a fresh publish overwrites a stale copy without symlink concerns
+        with open(src, "rb") as fs, open(dst, "wb") as fd:
+            fd.write(fs.read())
+        rows.append({"supp": idx, "path": rel,
+                     "module": i["module"], "artifact": i["artifact"],
+                     "src_path": i["rel"], "desc": c["desc"]})
+    rows.sort(key=lambda r: supp_sort_key(r["supp"]))
+    write_table(os.path.join(odir, "supp_tables.txt"),
+                ["supp", "path", "module", "artifact", "src_path", "desc"],
+                rows)
+
+
 def cmd_keys(args) -> None:
     _module, groups = load(args.ifn)
     print(" ".join(find_group(args.ifn, groups, args.group).keys))
@@ -545,8 +726,9 @@ def cmd_measure(args) -> None:
             "module": module, "group": g.id, "artifact": a.name,
             "kind": a.kind, "keys": ",".join(g.keys), "status": a.status,
             "reason": a.reason, "n": len(rows), "total_size": total,
-            "columns": ",".join(a.columns), "desc": a.desc,
-            "template": templates[a.var]})
+            "columns": ",".join(a.columns),
+            "supp": a.supp,
+            "desc": a.desc, "template": templates[a.var]})
         missing = len(rows) - n_found
         print(f"  {a.status:<8} {a.name:<28} {human(total):>8}"
               f"{f'   {missing} missing' if missing else ''}")
@@ -731,7 +913,9 @@ def cmd_publish(args) -> None:
                 ["module", "artifact", "tag", "path", "size", "src"], shipped)
     write_table(os.path.join(args.odir, "artifacts_class.txt"),
                 ["module", "artifact", "kind", "keys", "status", "reason",
-                 "n", "total_size", "columns", "desc"], classes)
+                 "n", "total_size", "columns", "supp", "desc"], classes)
+
+    publish_supp_folder(args.odir, classes, instances)
 
     ofn = os.path.join(args.odir, "README.md")
     with open(ofn, "w") as f:
@@ -753,7 +937,8 @@ def artifacts_lines(ifn: str) -> list[str]:
     for g in groups:
         lines.append(f"// {g.id} [{g.scope}]")
         for a in g.artifacts:
-            head = f"{a.name} [{a.kind}]: {a.desc}"
+            supp = f" [supp {a.supp}]" if a.supp else ""
+            head = f"{a.name}{supp} [{a.kind}]: {a.desc}"
             if a.columns:
                 head += f" (columns: {', '.join(a.columns)})"
             lines.append(head if a.shipped
@@ -796,6 +981,31 @@ def main() -> None:
                    help="the pipeline's methods dir, holding "
                         "{module}/artifacts.json")
     s.set_defaults(func=cmd_groups)
+
+    s = sub.add_parser("supp", help="pipeline-wide supp table numbering: "
+                                    "one 'module<tab>name<tab>index' row per "
+                                    "artifact carrying a 'supp' index")
+    s.add_argument("--ifn-methods", required=True)
+    s.add_argument("--src-dir", required=True)
+    s.set_defaults(func=cmd_supp)
+
+    s = sub.add_parser("supp_vars", help="space-separated 'MODULE:NAME:VAR' "
+                                          "triples for the make foreach that "
+                                          "resolves each supp path")
+    s.add_argument("--ifn-methods", required=True)
+    s.add_argument("--src-dir", required=True)
+    s.set_defaults(func=cmd_supp_vars)
+
+    s = sub.add_parser("supp_export", help="copy supp tables to "
+                                            "supp_tables/ and write "
+                                            "supp_tables.txt")
+    s.add_argument("--ifn-methods", required=True)
+    s.add_argument("--src-dir", required=True)
+    s.add_argument("--odir", required=True)
+    s.add_argument("pairs", nargs="*", metavar="MODULE:NAME=/path",
+                   help="the source path of each supp table, produced by the "
+                        "make foreach over supp_vars")
+    s.set_defaults(func=cmd_supp_export)
 
     for name, fn, helptext in (
             ("keys", cmd_keys, "the group's dynamic variable names"),

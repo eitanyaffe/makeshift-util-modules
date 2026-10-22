@@ -106,3 +106,9 @@ ARTIFACTS_ON_MISSING_FILE?=error
 # the code state the bundle was produced from, recorded in its README. set this
 # to the pipeline's methods tag once the pipeline is frozen
 ARTIFACTS_TAG?=none
+
+# supp tables have their own light export path, since they ship far more often
+# than the full artifact bundle. one file per supp table, named for its index
+# and the artifact, with supp_tables.txt at the folder root.
+SUPP_TABLES_VER?=v1
+SUPP_TABLES_DIR?=$(MANUSCRIPT_BASE_DIR)/supp_tables/$(SUPP_TABLES_VER)

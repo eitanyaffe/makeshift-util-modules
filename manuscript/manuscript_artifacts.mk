@@ -91,4 +91,28 @@ artifacts_export:
 		--tag $(ARTIFACTS_TAG)
 	$(_end)
 
-.PHONY: artifacts_scan artifacts_export artifacts_measure artifacts_measure_group
+#####################################################################################################
+# supp tables: only the artifacts declaring a 'supp' index, exported to a
+# small folder next to the manuscript. skips the full measure/copy pass,
+# and every supp source is a keyless config table so its var resolves to a
+# single path we can copy directly.
+#####################################################################################################
+
+_supp_triples=$(shell $(_artifacts_py) supp_vars \
+	--ifn-methods $(MANUSCRIPT_METHODS_JSON) --src-dir $(ARTIFACTS_SRC_DIR))
+# each triple is MODULE:NAME:VAR. resolve VAR under its own module context via
+# reval, so a $(_md)-relative path binds to the module that owns the artifact,
+# not the manuscript module the sub-make is currently running under
+_supp_pairs=$(foreach t,$(_supp_triples),\
+$(word 1,$(subst :, ,$t)):$(word 2,$(subst :, ,$t))=$(call reval,$(word 3,$(subst :, ,$t)),m=$(word 1,$(subst :, ,$t))))
+
+manuscript_supp_tables:
+	$(call _start,$(SUPP_TABLES_DIR))
+	$(_artifacts_py) supp_export \
+		--ifn-methods $(MANUSCRIPT_METHODS_JSON) \
+		--src-dir $(ARTIFACTS_SRC_DIR) \
+		--odir $(SUPP_TABLES_DIR) \
+		$(_supp_pairs)
+	$(_end)
+
+.PHONY: artifacts_scan artifacts_export artifacts_measure artifacts_measure_group manuscript_supp_tables

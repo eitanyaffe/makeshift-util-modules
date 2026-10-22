@@ -114,6 +114,9 @@ from methods_registry import DRAFT_MARK
 from methods_to_tex import convert_body, escape_tex
 
 RESOLVED_TYPES = ("stat", "setting")
+# supp is resolved like a value but not from the values table: the number
+# comes from a pipeline-wide walk over every module's artifacts.json
+SUPP_TYPE = "supp"
 RETIRED_TYPES = ("step", "table", "param")
 
 # the reporting decision for a step; exactly one per line
@@ -859,10 +862,21 @@ def collect_tokens(blocks: list[Block], module: str,
                         fail(f"line {lineno}: '{ttype}' tokens are retired — "
                              f"move {{{{{body}}}}} to {where}")
                         continue
+                    if ttype == SUPP_TYPE:
+                        # supp tokens name a supp-marked artifact declared in
+                        # that module's artifacts.json. scope may be any module,
+                        # since a paper reference is pipeline-wide by nature.
+                        if not scope:
+                            fail(f"line {lineno}: {tm.group(0)} has an empty "
+                                 f"scope; supp tokens are 'supp:MODULE:NAME'")
+                            continue
+                        out.append(Token(tm.group(0), ttype, scope, name,
+                                         lineno, p.lead_in))
+                        continue
                     if ttype not in RESOLVED_TYPES:
                         fail(f"line {lineno}: unknown token type '{ttype}' in "
                              f"{{{{{body}}}}} — known types: "
-                             f"{', '.join(RESOLVED_TYPES)}")
+                             f"{', '.join(RESOLVED_TYPES + (SUPP_TYPE,))}")
                         continue
                     if scope not in allowed_scopes:
                         extra = (f"; declared imports: "
@@ -916,7 +930,7 @@ def check_statistics(blocks: list[Block], module: str,
                 fail(f"line {st.line}: '{st.name}' has no description")
             decls[st.name] = st
 
-    own = [t for t in tokens if t.scope == module]
+    own = [t for t in tokens if t.type in RESOLVED_TYPES and t.scope == module]
     for t in own:
         st = decls.get(t.key)
         if st is None:
@@ -1095,6 +1109,7 @@ def load_values(ifn: str, required: bool = True) -> dict[str, str]:
 
 
 def check_values(tokens: list[Token], values: dict[tuple[str, str], str],
+                 supp_map: dict[tuple[str, str], str],
                  module: str, strict: bool) -> list[Token]:
     """report what the values table does not cover, and return it.
 
@@ -1105,15 +1120,25 @@ def check_values(tokens: list[Token], values: dict[tuple[str, str], str],
     in the compiled pdf than a refusal is in a terminal."""
     report = fail if strict else (
         lambda msg: print(f"warning: {msg}"))
-    required = {(t.scope, t.key) for t in tokens}
+    value_tokens = [t for t in tokens if t.type in RESOLVED_TYPES]
+    supp_tokens = [t for t in tokens if t.type == SUPP_TYPE]
+    required = {(t.scope, t.key) for t in value_tokens}
     unresolved, seen = [], set()
-    for t in tokens:
+    for t in value_tokens:
         if (t.scope, t.key) in values or (t.scope, t.key) in seen:
             continue
         seen.add((t.scope, t.key))
         unresolved.append(t)
         report(f"line {t.line}: {t.raw} has no entry in the values table "
                f"for scope '{t.scope}'")
+    for t in supp_tokens:
+        if (t.scope, t.key) in supp_map or (t.scope, t.key) in seen:
+            continue
+        seen.add((t.scope, t.key))
+        unresolved.append(t)
+        report(f"line {t.line}: {t.raw} names no supp-marked artifact "
+               f"'{t.key}' in module '{t.scope}' — mark it 'supp: true' in "
+               f"the module's artifacts.json, or fix the reference")
     # only the module's own values are checked for unreferenced keys;
     # imported modules validate their own values via their own scan+compile
     own_extra = sorted(k for k in set(values) - required if k[0] == module)
@@ -1152,13 +1177,19 @@ def reflow(text: str, width: int) -> str:
 
 
 def substitute(text: str, values: dict[tuple[str, str], str],
-               for_full: bool) -> str:
+               for_full: bool,
+               supp_map: dict[tuple[str, str], str] | None = None) -> str:
     def repl(m):
         body = m.group(1)
         fields = [f.strip() for f in body.split(":")]
         if len(fields) != 3:
             return m.group(0)
-        _ttype, scope, name = fields
+        ttype, scope, name = fields
+        if ttype == SUPP_TYPE:
+            num = (supp_map or {}).get((scope, name))
+            if num is None:
+                return f"**{body}:NA**" if for_full else "**NA**"
+            return f"`{body}:{num}`" if for_full else num
         key = (scope, name)
         # a value the stats rule has not produced renders bold, so a gap is
         # impossible to skim past in a compiled pdf
@@ -1179,7 +1210,8 @@ def draft_banner(unresolved: list[Token], n_tokens: int, module: str) -> str:
 
 
 def render_paper_md(blocks: list[Block], values: dict[str, str],
-                    width: int) -> str:
+                    width: int,
+                    supp_map: dict[tuple[str, str], str] | None = None) -> str:
     real = [b for b in blocks if b.is_prose]
     multi = len(real) > 1
     parts = []
@@ -1190,18 +1222,20 @@ def render_paper_md(blocks: list[Block], values: dict[str, str],
             prose = p.prose.strip()
             if not prose:
                 continue
-            body = substitute(prose, values, for_full=False)
+            body = substitute(prose, values, for_full=False, supp_map=supp_map)
             body = reflow(f"**{p.lead_in}.** {body}", width)
             parts.append(body)
     return "\n\n".join(parts).strip() + "\n"
 
 
-def render_full_md(raw: str, values: dict[str, str]) -> str:
+def render_full_md(raw: str, values: dict[str, str],
+                   supp_map: dict[tuple[str, str], str] | None = None) -> str:
     """the template as written, with every value substituted beside its token"""
-    return substitute(raw, values, for_full=True).strip() + "\n"
+    return substitute(raw, values, for_full=True, supp_map=supp_map).strip() + "\n"
 
 
-def render_full_tex(blocks: list[Block], values: dict[str, str]) -> str:
+def render_full_tex(blocks: list[Block], values: dict[str, str],
+                    supp_map: dict[tuple[str, str], str] | None = None) -> str:
     """prose becomes LaTeX; steps and notes become % lines, present in the
     source and absent from a compiled PDF"""
     def comment(lines):
@@ -1236,7 +1270,7 @@ def render_full_tex(blocks: list[Block], values: dict[str, str]) -> str:
                 for s in p.steps))
             prose = p.prose.strip()
             if prose:
-                body = substitute(prose, values, for_full=True)
+                body = substitute(prose, values, for_full=True, supp_map=supp_map)
                 tex = convert_body(f"**{p.lead_in}.** {body}").rstrip()
                 if tex:
                     parts.append(tex)
@@ -1318,6 +1352,25 @@ def cmd_scan(args) -> None:
     report_main_text_fixes(blocks)
 
 
+def load_supp_map(args) -> dict[tuple[str, str], str]:
+    """the pipeline-wide supp table numbering. auto-discovers methods.json and
+    the methods dir from the template path when neither is passed explicitly,
+    so the compile command in a module's _methods.mk needs no new flags."""
+    ifn_methods = getattr(args, "ifn_methods", None)
+    src_dir = getattr(args, "src_dir", None)
+    if not ifn_methods and not src_dir:
+        # a template lives at {src_dir}/{module}/{module}.md by convention
+        guess = os.path.dirname(os.path.dirname(os.path.abspath(args.ifn_template)))
+        cand = os.path.join(guess, "methods.json")
+        if os.path.isfile(cand):
+            ifn_methods = cand
+            src_dir = guess
+    if not ifn_methods or not src_dir:
+        return {}
+    return {(m, n): str(i)
+            for m, n, i in artifacts_mod.enumerate_supp(ifn_methods, src_dir)}
+
+
 def cmd_compile(args) -> None:
     raw, blocks, tokens, _citations, imports, _decls, tag = prepare(args)
 
@@ -1364,12 +1417,13 @@ def cmd_compile(args) -> None:
               f"template does not declare them under 'imports:'")
         sys.exit(1)
 
-    unresolved = check_values(tokens, values, args.module, args.strict)
+    supp_map = load_supp_map(args)
+    unresolved = check_values(tokens, values, supp_map, args.module, args.strict)
     flush(f"compile of {args.ifn_template}")
 
-    paper_md = render_paper_md(blocks, values, args.width)
-    full_md = render_full_md(raw, values)
-    full_tex = render_full_tex(blocks, values)
+    paper_md = render_paper_md(blocks, values, args.width, supp_map=supp_map)
+    full_md = render_full_md(raw, values, supp_map=supp_map)
+    full_tex = render_full_tex(blocks, values, supp_map=supp_map)
 
     # the draft note leads every output, including the paper: the pdf is how
     # the section gets read, so that is where an unfinished one must say so
@@ -1451,6 +1505,15 @@ def main() -> None:
     c.add_argument("--ifn-references", default=None,
                    help="CSL JSON bibliography used to validate Pandoc "
                         "citation keys in prose")
+    c.add_argument("--ifn-methods", default=None,
+                   help="the pipeline's methods.json, needed to resolve "
+                        "'supp:' tokens against a pipeline-wide table "
+                        "numbering. auto-discovered from the template path "
+                        "when omitted")
+    c.add_argument("--src-dir", default=None,
+                   help="the pipeline's methods dir, holding one "
+                        "{module}/artifacts.json per module. auto-discovered "
+                        "from the template path when omitted")
     c.add_argument("--width", type=int, default=90,
                    help="wrap width of the paper doc (default 90)")
     c.add_argument("--strict", action="store_true",

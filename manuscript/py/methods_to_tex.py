@@ -11,7 +11,8 @@ A rendered methods doc carries no title and no headings — it is a run of
 bold-led paragraphs — so the only heading structure comes from here:
 
   \\section{Methods}
-  \\subsection{title}   one per registered module, from its title
+  \\subsection{title}   one per registered module, from its title; consecutive
+                       modules with the same title share one heading
 
 `\\subsubsection` is still emitted for a stray markdown heading, so a doc
 that does use headings degrades sensibly rather than losing them.
@@ -248,9 +249,13 @@ def write_methods_tex(entries, ofn, banner=""):
     if banner:
         parts.append(f"\\textbf{{{escape_tex(banner)}}}")
         parts.append("")
+    prev = None
     for title, body in entries:
-        parts.append(f"\\subsection{{{escape_tex(title)}}}")
-        parts.append("")
+        # consecutive modules sharing a title share one heading
+        if title != prev:
+            parts.append(f"\\subsection{{{escape_tex(title)}}}")
+            parts.append("")
+        prev = title
         parts.append(body.rstrip())
         parts.append("")
 
