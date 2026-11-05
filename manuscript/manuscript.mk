@@ -14,7 +14,7 @@ _manuscript_export=python $(_md)/py/manuscript.py \
 
 # copy figure files described in the manuscript json to the export directory.
 # also auto-copies per-pdf sidecars and caption_*.txt, and generates
-# captions.txt from all rendered captions (see ms-manuscript skill).
+# captions.txt and captions.md from all rendered captions (see ms-manuscript skill).
 manuscript_export_figs:
 	$(call _start,$(MANUSCRIPT_EXPORT_DIR))
 	$(_manuscript_export) what=figures
@@ -207,4 +207,21 @@ manuscript_docx:
 	rm -f $$buildlog; \
 	echo "created: $(MANUSCRIPT_DOCX)"; \
 	echo "in Word: open Zotero document preferences (OK), then Refresh, then Add/Edit Bibliography"
-.PHONY: manuscript_docx
+
+# host-side captions DOCX from the exported captions.md; captions carry no
+# citations, so no Zotero filter
+MANUSCRIPT_CAPTIONS_DOCX_BODY?=$(MANUSCRIPT_EXPORT_DIR)/captions.md
+MANUSCRIPT_CAPTIONS_DOCX?=$(MANUSCRIPT_EXPORT_DIR)/captions.docx
+manuscript_captions_docx:
+	@command -v pandoc >/dev/null || { echo "error: pandoc not found (install on the host)" >&2; exit 1; }
+	@[ -f $(MANUSCRIPT_CAPTIONS_DOCX_BODY) ] || { echo "error: missing $(MANUSCRIPT_CAPTIONS_DOCX_BODY); run manuscript_export_figs first" >&2; exit 1; }
+	@echo "rendering captions.md -> captions.docx"; \
+	pandoc \
+		--from=markdown \
+		--to=docx \
+		--standalone \
+		--output=$(MANUSCRIPT_CAPTIONS_DOCX) \
+		$(MANUSCRIPT_CAPTIONS_DOCX_BODY) || \
+		{ echo "error: pandoc failed on $(MANUSCRIPT_CAPTIONS_DOCX_BODY)" >&2; exit 1; }; \
+	echo "created: $(MANUSCRIPT_CAPTIONS_DOCX)"
+.PHONY: manuscript_docx manuscript_captions_docx

@@ -154,33 +154,112 @@ def read_caption(path):
 
 CAPTIONS_TXT_SEP = "-" * 80
 
+# sentence boundary: terminal punctuation, then a capital, markup or bracket
+SENTENCE_RE = re.compile(r'(?<=[.!?])\s+(?=[A-Z_`(“"])')
+
+
+def split_sentences(text):
+    return [s for s in SENTENCE_RE.split(text) if s]
+
+
+def merge_part_captions(caps, parts):
+    """one caption from the per-pdf captions of a panel.
+
+    identical captions collapse to one. otherwise each pdf contributes the
+    sentences it does not share with every other pdf, prefixed by its label
+    from 'parts' when one is given, and the shared sentences follow once."""
+    labeled = []
+    for i, cap in enumerate(caps):
+        if cap is None:
+            continue
+        lab = parts[i] if parts else ""
+        if not lab and any(c == cap for _l, c in labeled):
+            continue
+        labeled.append((lab, cap))
+    if not labeled:
+        return "TBD."
+    if len(labeled) == 1 and not labeled[0][0]:
+        return labeled[0][1]
+
+    sents = [split_sentences(c) for _l, c in labeled]
+    shared = []
+    if len(labeled) > 1:
+        shared = [s for s in sents[0] if all(s in other for other in sents[1:])]
+    pieces = []
+    for (lab, _c), ss in zip(labeled, sents):
+        body = " ".join(s for s in ss if s not in shared)
+        if not body:
+            continue
+        pieces.append(f"{lab}: {body}" if lab else body)
+    return " ".join(pieces + shared)
+
+
+def panel_caption(panel, panel_dir, label):
+    """the caption of one panel, on a single line"""
+    if is_stub_panel(panel):
+        return "TBD."
+    if is_caption_only_panel(panel):
+        return " ".join(panel["caption"].split())
+    pdfs = [f for f in panel.get("files", []) if f.endswith(".pdf")]
+    parts = panel.get("parts")
+    if parts is not None and len(parts) != len(pdfs):
+        print(f"error: panel {label} lists {len(parts)} parts for "
+              f"{len(pdfs)} pdfs")
+        sys.exit(1)
+    caps = []
+    for pdf in pdfs:
+        cap = read_caption(os.path.join(panel_dir, caption_basename(pdf)))
+        caps.append(" ".join(cap.split()) if cap is not None else None)
+    return merge_part_captions(caps, parts)
+
+
+def figure_panel_captions(fig, num, odir):
+    """(label, letter, caption) per panel of one figure"""
+    fig_dir = f"figure_{num}"
+    out = []
+    for j, panel in enumerate(fig.get("panels", [])):
+        letter = chr(ord('a') + j)
+        label = f"{num}{letter}"
+        panel_dir = os.path.join(odir, fig_dir, label)
+        out.append((label, letter, panel_caption(panel, panel_dir, label)))
+    return out
+
 
 def render_figure_block(fig, num, odir):
     """lines for one figure: a '=== Figure N: title ===' header, then one
     'label: caption' line per panel"""
     title = fig.get("title", "")
     lines = [f"=== Figure {num}: {title} ==="]
-    fig_dir = f"figure_{num}"
-    for j, panel in enumerate(fig.get("panels", [])):
-        letter = chr(ord('a') + j)
-        label = f"{num}{letter}"
+    for label, _letter, cap in figure_panel_captions(fig, num, odir):
         lines.append("")
-        if is_stub_panel(panel):
-            lines.append(f"{label}: TBD.")
-            continue
-        if is_caption_only_panel(panel):
-            lines.append(f"{label}: {panel['caption'].strip()}")
-            continue
-        panel_dir = os.path.join(odir, fig_dir, label)
-        pdfs = [f for f in panel.get("files", []) if f.endswith(".pdf")]
-        caps = []
-        for pdf in pdfs:
-            cap = read_caption(os.path.join(panel_dir, caption_basename(pdf)))
-            if cap is not None:
-                caps.append(cap)
-        caption_text = "\n\n".join(caps) if caps else "TBD."
-        lines.append(f"{label}: {caption_text}")
+        lines.append(f"{label}: {cap}")
     return lines
+
+
+def figure_paragraph(fig, num, prefix, odir):
+    """one markdown paragraph: bold 'Figure N. Title.' then bold 'a)' ... 'b)'.
+    panels stay inline, since 'a)' opening a paragraph would parse as a list"""
+    title = fig.get("title", "").strip()
+    if title and title[-1] not in ".!?":
+        title += "."
+    panels = " ".join(f"**{letter})** {cap}"
+                      for _label, letter, cap in figure_panel_captions(fig, num, odir))
+    return f"**{prefix} {num}. {title}** {panels}".rstrip()
+
+
+def emit_captions_md(figures, supp_figures, odir):
+    """assemble captions.md: main then supplementary figures, one paragraph each"""
+    lines = ["# Main figure captions", ""]
+    for i, fig in enumerate(figures):
+        lines += [figure_paragraph(fig, str(i + 1), "Figure", odir), ""]
+    if supp_figures:
+        lines += ["# Supplementary figure captions", ""]
+        for i, fig in enumerate(supp_figures):
+            lines += [figure_paragraph(fig, f"S{i + 1}", "Supp. Figure", odir), ""]
+    ofn = os.path.join(odir, "captions.md")
+    with open(ofn, "w") as f:
+        f.write("\n".join(lines).rstrip() + "\n")
+    print(f"generated: {ofn}")
 
 
 def emit_captions_txt(figures, supp_figures, odir):
@@ -382,6 +461,7 @@ def main():
         export_figures(supp_figures, lambda n: f"S{n}", var_map, odir,
                        on_missing)
         emit_captions_txt(figures, supp_figures, odir)
+        emit_captions_md(figures, supp_figures, odir)
         copy_file(ifn, os.path.join(odir, os.path.basename(ifn)), on_missing)
         n_main, n_supp = len(figures), len(supp_figures)
 

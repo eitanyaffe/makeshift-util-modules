@@ -1171,8 +1171,17 @@ def reflow(text: str, width: int) -> str:
         if any(STRUCTURED.match(l) for l in lines):
             out.append("\n".join(tidy(l) for l in lines))
             continue
-        out.append("\n".join(textwrap.wrap(tidy(" ".join(lines)),
-                                           width=width) or [""]))
+        # stash TeX math so wrapping cannot split a formula mid-token
+        joined = tidy(" ".join(lines))
+        stashed = []
+        def stash(m):
+            stashed.append(m.group(0))
+            return f"\x00{len(stashed) - 1}\x01"
+        protected = re.sub(r"\$\$.*?\$\$|\$(?:\\.|[^$\\])+\$", stash, joined)
+        wrapped = "\n".join(textwrap.wrap(protected, width=width) or [""])
+        for i, s in enumerate(stashed):
+            wrapped = wrapped.replace(f"\x00{i}\x01", s)
+        out.append(wrapped)
     return "\n\n".join(out)
 
 
