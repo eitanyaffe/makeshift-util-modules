@@ -12,6 +12,10 @@ $(call _register_module,manuscript,MANUSCRIPT_VER,$(units))
 
 MANUSCRIPT_JSON?=$(_cd)/manuscript/figures.json
 
+# the numbered tables of the paper, main and supplementary. a config property
+# like the figures: array order is the table number
+MANUSCRIPT_TABLES_JSON?=$(_cd)/manuscript/tables.json
+
 # methods templates live with the pipeline that ran the steps they describe,
 # not with the module: one directory holds the paper's whole methods coverage.
 # per module: {module}/{module}.md and dry/$(PROJECT_NAME)/
@@ -106,9 +110,3 @@ ARTIFACTS_ON_MISSING_FILE?=error
 # the code state the bundle was produced from, recorded in its README. set this
 # to the pipeline's methods tag once the pipeline is frozen
 ARTIFACTS_TAG?=none
-
-# supp tables have their own light export path, since they ship far more often
-# than the full artifact bundle. one file per supp table, named for its index
-# and the artifact, with supp_tables.txt at the folder root.
-SUPP_TABLES_VER?=v1
-SUPP_TABLES_DIR?=$(MANUSCRIPT_BASE_DIR)/supp_tables/$(SUPP_TABLES_VER)

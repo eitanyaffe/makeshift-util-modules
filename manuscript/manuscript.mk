@@ -33,6 +33,46 @@ manuscript_export:
 	$(_end)
 .PHONY: manuscript_export manuscript_export_figs manuscript_export_methods
 
+# the numbered tables placed in {config}/manuscript/tables.json. each entry
+# names the module rule that builds it and the variable holding its path.
+_tables_py=python $(_md)/py/ms_tables.py
+_tables_triples=$(if $(wildcard $(MANUSCRIPT_TABLES_JSON)),\
+$(shell $(_tables_py) vars --ifn $(MANUSCRIPT_TABLES_JSON)))
+# each triple is MODULE:NAME:VAR. resolve VAR under its own module context via
+# reval, so a $(_md)-relative path binds to the module that owns the table,
+# not the manuscript module the sub-make is currently running under
+_tables_pairs=$(foreach t,$(_tables_triples),\
+$(word 1,$(subst :, ,$t)):$(word 2,$(subst :, ,$t))=$(call reval,$(word 3,$(subst :, ,$t)),m=$(word 1,$(subst :, ,$t))))
+
+# build the placed tables by calling each entry's module rule. usage:
+#   make tables c={config}               → every table
+#   make tables x=1 c={config}           → Table 1
+#   make tables x=supp2 c={config}       → Supp. Table 2
+#   make tables x="1 supp2" c={config}   → several (space- or comma-separated)
+tables:
+	$(_tables_py) run \
+		--ifn $(MANUSCRIPT_TABLES_JSON) \
+		--x "$(x)" \
+		--make $(MAKE) \
+		--c $(PROJECT_NAME)
+
+# copy every placed table as .txt and .xlsx, and write tables.md with the
+# captions and column descriptions. the column list in the json must match
+# each table's header. a config that places no tables exports none.
+manuscript_export_tables:
+ifeq ($(wildcard $(MANUSCRIPT_TABLES_JSON)),)
+	@echo "no tables placed, nothing to export: $(MANUSCRIPT_TABLES_JSON) not found"
+else
+	$(call _start,$(MANUSCRIPT_EXPORT_DIR))
+	$(_tables_py) export \
+		--ifn $(MANUSCRIPT_TABLES_JSON) \
+		--odir $(MANUSCRIPT_EXPORT_DIR) \
+		--on-missing-file $(MANUSCRIPT_ON_MISSING_FILE) \
+		$(_tables_pairs)
+	$(_end)
+endif
+.PHONY: tables manuscript_export_tables
+
 # regenerate ms figures for the current config by dispatching to
 # {config}/manuscript/generate.mk. usage:
 #   make figs c={config}              → generate_all

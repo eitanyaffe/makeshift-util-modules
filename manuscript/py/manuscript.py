@@ -71,10 +71,17 @@ def data_basename(pdf_fname):
     return os.path.join(d, data) if d else data
 
 
+def panel_label_of(panel, label_prefix, idx):
+    """prefer the panel title from figures.json (e.g. S1, 1a); fall back to prefix+letter"""
+    title = str(panel.get("title", "")).strip()
+    if title:
+        return title
+    return f"{label_prefix}{chr(ord('a') + idx)}"
+
+
 def export_panels(panels, label_prefix, fig_dir, var_map, odir, on_missing):
     for idx, panel in enumerate(panels):
-        letter = chr(ord('a') + idx)
-        panel_label = f"{label_prefix}{letter}"
+        panel_label = panel_label_of(panel, label_prefix, idx)
         if is_stub_panel(panel):
             print(f"  panel {panel_label}: stub, skipped")
             continue
@@ -214,14 +221,22 @@ def panel_caption(panel, panel_dir, label):
 
 
 def figure_panel_captions(fig, num, odir):
-    """(label, letter, caption) per panel of one figure"""
+    """(label, letter_or_None, caption) per panel of one figure.
+    letter is set only when the panel title is the classic prefix+letter form
+    (1a, S2b); single-panel titles that equal the figure number (S1) get None."""
     fig_dir = f"figure_{num}"
     out = []
     for j, panel in enumerate(fig.get("panels", [])):
         letter = chr(ord('a') + j)
-        label = f"{num}{letter}"
+        label = panel_label_of(panel, num, j)
+        if label == num:
+            show = None
+        elif label == f"{num}{letter}":
+            show = letter
+        else:
+            show = letter if len(fig.get("panels", [])) > 1 else None
         panel_dir = os.path.join(odir, fig_dir, label)
-        out.append((label, letter, panel_caption(panel, panel_dir, label)))
+        out.append((label, show, panel_caption(panel, panel_dir, label)))
     return out
 
 
@@ -237,13 +252,19 @@ def render_figure_block(fig, num, odir):
 
 
 def figure_paragraph(fig, num, prefix, odir):
-    """one markdown paragraph: bold 'Figure N. Title.' then bold 'a)' ... 'b)'.
-    panels stay inline, since 'a)' opening a paragraph would parse as a list"""
+    """one markdown paragraph: bold 'Figure N. Title.' then panel captions.
+    multi-panel figures keep bold 'a)' ... 'b)'; a single panel with no letter
+    (title equals the figure number) is inlined without a letter prefix."""
     title = fig.get("title", "").strip()
     if title and title[-1] not in ".!?":
         title += "."
-    panels = " ".join(f"**{letter})** {cap}"
-                      for _label, letter, cap in figure_panel_captions(fig, num, odir))
+    parts = []
+    for _label, letter, cap in figure_panel_captions(fig, num, odir):
+        if letter is None:
+            parts.append(cap)
+        else:
+            parts.append(f"**{letter})** {cap}")
+    panels = " ".join(parts)
     return f"**{prefix} {num}. {title}** {panels}".rstrip()
 
 

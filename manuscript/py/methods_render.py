@@ -110,12 +110,13 @@ import sys
 import textwrap
 
 import artifacts as artifacts_mod
+import ms_tables
 from methods_registry import DRAFT_MARK
 from methods_to_tex import convert_body, escape_tex
 
 RESOLVED_TYPES = ("stat", "setting")
 # supp is resolved like a value but not from the values table: the number
-# comes from a pipeline-wide walk over every module's artifacts.json
+# is the table's position among the supp tables of the config's tables.json
 SUPP_TYPE = "supp"
 RETIRED_TYPES = ("step", "table", "param")
 
@@ -863,8 +864,8 @@ def collect_tokens(blocks: list[Block], module: str,
                              f"move {{{{{body}}}}} to {where}")
                         continue
                     if ttype == SUPP_TYPE:
-                        # supp tokens name a supp-marked artifact declared in
-                        # that module's artifacts.json. scope may be any module,
+                        # supp tokens name a supp table of that module placed in
+                        # the config's tables.json. scope may be any module,
                         # since a paper reference is pipeline-wide by nature.
                         if not scope:
                             fail(f"line {lineno}: {tm.group(0)} has an empty "
@@ -1136,9 +1137,10 @@ def check_values(tokens: list[Token], values: dict[tuple[str, str], str],
             continue
         seen.add((t.scope, t.key))
         unresolved.append(t)
-        report(f"line {t.line}: {t.raw} names no supp-marked artifact "
-               f"'{t.key}' in module '{t.scope}' — mark it 'supp: true' in "
-               f"the module's artifacts.json, or fix the reference")
+        report(f"line {t.line}: {t.raw} names no supp table '{t.key}' of "
+               f"module '{t.scope}' — place it under supp_tables in the "
+               f"config's manuscript/tables.json, pass that file to the "
+               f"compile as --ifn-tables, or fix the reference")
     # only the module's own values are checked for unreferenced keys;
     # imported modules validate their own values via their own scan+compile
     own_extra = sorted(k for k in set(values) - required if k[0] == module)
@@ -1362,22 +1364,14 @@ def cmd_scan(args) -> None:
 
 
 def load_supp_map(args) -> dict[tuple[str, str], str]:
-    """the pipeline-wide supp table numbering. auto-discovers methods.json and
-    the methods dir from the template path when neither is passed explicitly,
-    so the compile command in a module's _methods.mk needs no new flags."""
-    ifn_methods = getattr(args, "ifn_methods", None)
-    src_dir = getattr(args, "src_dir", None)
-    if not ifn_methods and not src_dir:
-        # a template lives at {src_dir}/{module}/{module}.md by convention
-        guess = os.path.dirname(os.path.dirname(os.path.abspath(args.ifn_template)))
-        cand = os.path.join(guess, "methods.json")
-        if os.path.isfile(cand):
-            ifn_methods = cand
-            src_dir = guess
-    if not ifn_methods or not src_dir:
+    """the supp table numbering: (module, name) -> position in the config's
+    tables.json. the template is a pipeline property and the placement a
+    config one, so the path cannot be found from the template and is passed
+    in. without it every supp token is unresolved."""
+    ifn_tables = getattr(args, "ifn_tables", None)
+    if not ifn_tables:
         return {}
-    return {(m, n): str(i)
-            for m, n, i in artifacts_mod.enumerate_supp(ifn_methods, src_dir)}
+    return ms_tables.supp_numbers(ifn_tables)
 
 
 def cmd_compile(args) -> None:
@@ -1514,15 +1508,10 @@ def main() -> None:
     c.add_argument("--ifn-references", default=None,
                    help="CSL JSON bibliography used to validate Pandoc "
                         "citation keys in prose")
-    c.add_argument("--ifn-methods", default=None,
-                   help="the pipeline's methods.json, needed to resolve "
-                        "'supp:' tokens against a pipeline-wide table "
-                        "numbering. auto-discovered from the template path "
-                        "when omitted")
-    c.add_argument("--src-dir", default=None,
-                   help="the pipeline's methods dir, holding one "
-                        "{module}/artifacts.json per module. auto-discovered "
-                        "from the template path when omitted")
+    c.add_argument("--ifn-tables", default=None,
+                   help="the config's manuscript/tables.json, needed to "
+                        "resolve 'supp:' tokens: a supp table's number is "
+                        "its position in that file")
     c.add_argument("--width", type=int, default=90,
                    help="wrap width of the paper doc (default 90)")
     c.add_argument("--strict", action="store_true",
