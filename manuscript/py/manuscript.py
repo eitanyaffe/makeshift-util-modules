@@ -138,9 +138,26 @@ def export_legends(legends, label_prefix, fig_dir, var_map, odir, on_missing):
             copy_file(src, dst, on_missing)
 
 
-def export_figures(figures, number_fmt, var_map, odir, on_missing):
-    for idx, fig in enumerate(figures):
-        num = number_fmt(idx + 1)
+def figure_numbers(figures, prefix):
+    """label per figure, in order: the figure's own "number" when it sets one (parked
+    figures, numbered out of the way), else its position among the figures that do not"""
+    nums = []
+    pos = 0
+    for fig in figures:
+        if "number" in fig:
+            nums.append(f"{prefix}{fig['number']}")
+        else:
+            pos += 1
+            nums.append(f"{prefix}{pos}")
+    dup = sorted({n for n in nums if nums.count(n) > 1})
+    if dup:
+        print(f"error: figure number used twice: {', '.join(dup)}")
+        sys.exit(1)
+    return nums
+
+
+def export_figures(figures, prefix, var_map, odir, on_missing):
+    for fig, num in zip(figures, figure_numbers(figures, prefix)):
         fig_dir = f"figure_{num}"
         title = fig.get("title", "")
         print("=" * 80)
@@ -271,12 +288,12 @@ def figure_paragraph(fig, num, prefix, odir):
 def emit_captions_md(figures, supp_figures, odir):
     """assemble captions.md: main then supplementary figures, one paragraph each"""
     lines = ["# Main figure captions", ""]
-    for i, fig in enumerate(figures):
-        lines += [figure_paragraph(fig, str(i + 1), "Figure", odir), ""]
+    for fig, num in zip(figures, figure_numbers(figures, "")):
+        lines += [figure_paragraph(fig, num, "Figure", odir), ""]
     if supp_figures:
         lines += ["# Supplementary figure captions", ""]
-        for i, fig in enumerate(supp_figures):
-            lines += [figure_paragraph(fig, f"S{i + 1}", "Supp. Figure", odir), ""]
+        for fig, num in zip(supp_figures, figure_numbers(supp_figures, "S")):
+            lines += [figure_paragraph(fig, num, "Supp. Figure", odir), ""]
     ofn = os.path.join(odir, "captions.md")
     with open(ofn, "w") as f:
         f.write("\n".join(lines).rstrip() + "\n")
@@ -285,8 +302,10 @@ def emit_captions_md(figures, supp_figures, odir):
 
 def emit_captions_txt(figures, supp_figures, odir):
     """assemble captions.txt (plain text) from rendered caption files in the export dir"""
-    blocks = [render_figure_block(fig, str(i + 1), odir) for i, fig in enumerate(figures)]
-    blocks += [render_figure_block(fig, f"S{i + 1}", odir) for i, fig in enumerate(supp_figures)]
+    blocks = [render_figure_block(fig, num, odir)
+              for fig, num in zip(figures, figure_numbers(figures, ""))]
+    blocks += [render_figure_block(fig, num, odir)
+               for fig, num in zip(supp_figures, figure_numbers(supp_figures, "S"))]
 
     lines = []
     for i, block in enumerate(blocks):
@@ -478,9 +497,8 @@ def main():
     n_main = n_supp = n_methods = 0
 
     if what in ("all", "figures"):
-        export_figures(figures, lambda n: str(n), var_map, odir, on_missing)
-        export_figures(supp_figures, lambda n: f"S{n}", var_map, odir,
-                       on_missing)
+        export_figures(figures, "", var_map, odir, on_missing)
+        export_figures(supp_figures, "S", var_map, odir, on_missing)
         emit_captions_txt(figures, supp_figures, odir)
         emit_captions_md(figures, supp_figures, odir)
         copy_file(ifn, os.path.join(odir, os.path.basename(ifn)), on_missing)

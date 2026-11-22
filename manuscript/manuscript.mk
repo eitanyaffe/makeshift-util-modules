@@ -244,6 +244,8 @@ manuscript_docx:
 		--output=$(MANUSCRIPT_DOCX) \
 		$(MANUSCRIPT_DOCX_BODY) >$$buildlog 2>&1 || \
 		{ echo "error: pandoc/zotero.lua failed (see $$buildlog); is Zotero running with Better BibTeX?" >&2; exit 1; }; \
+	if grep -q -E '^could not fetch Zotero items|^@.*(not found|duplicates found|not in Zotero)' $$buildlog; then \
+		echo "error: Zotero did not resolve every citation, so those are plain text in the docx (see $$buildlog); if Zotero was just started, wait until it has loaded and rerun" >&2; exit 1; fi; \
 	rm -f $$buildlog; \
 	echo "created: $(MANUSCRIPT_DOCX)"; \
 	echo "in Word: open Zotero document preferences (OK), then Refresh, then Add/Edit Bibliography"
